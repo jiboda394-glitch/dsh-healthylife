@@ -1,0 +1,13 @@
+# 运行时产物
+native/dist/popup.log
+
+# 构建中间文件
+native/Popup/obj/
+native/Popup/bin/
+.dotnet-home/
+.nuget/
+.popup-build/
+
+# 编辑器
+.vs/
+*.user

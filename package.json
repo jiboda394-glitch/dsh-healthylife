@@ -1,0 +1,23 @@
+{
+  "name": "@local/healthylife",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "宵禁与作息守护：到点提醒、倒计时关机、取消配额与自动豁免。",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": ["index.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "native/dist/**", "!native/dist/popup.log"],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "compatibility": { "dshReleases": { "0.2.2-rc.1": "compatible" } },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": ["@deepseek-ai/dsh-client-connection"]
+    }
+  }
+}

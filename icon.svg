@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Healthy life">
+  <defs>
+    <linearGradient id="hlNight" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2f4dff"/>
+      <stop offset="1" stop-color="#7a3cff"/>
+    </linearGradient>
+    <linearGradient id="hlLeaf" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#1fb57a"/>
+      <stop offset="1" stop-color="#6ee7b7"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="16" fill="url(#hlNight)"/>
+  <path d="M38.2 15.4a17.4 17.4 0 1 0 12.6 28.2A14.2 14.2 0 0 1 38.2 15.4Z" fill="#ffffff" opacity="0.94"/>
+  <path d="M25.6 39.4c6.4-1.2 10.4-5 11.4-11.6-6.6.4-10.6 4.2-11.4 11.6Z" fill="url(#hlLeaf)"/>
+  <path d="M25.6 39.4c2.6-3.4 5.4-6.1 8.6-8.1" fill="none" stroke="#0f6b47" stroke-width="1.6" stroke-linecap="round"/>
+  <circle cx="47" cy="17" r="1.7" fill="#ffffff" opacity="0.85"/>
+  <circle cx="52" cy="25" r="1.1" fill="#ffffff" opacity="0.6"/>
+</svg>

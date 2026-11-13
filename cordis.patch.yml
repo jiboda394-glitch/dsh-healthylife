@@ -1,0 +1,3 @@
+- insert:
+    - id: healthylife
+      name: '@local/healthylife'
