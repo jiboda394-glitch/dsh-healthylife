@@ -32,6 +32,8 @@ const STATE_DIR = (() => {
 const STATE_FILE = path.join(STATE_DIR, 'state.json')
 const POPUP_FILE = path.join(STATE_DIR, 'popup.json')
 const POPUP_EXE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'native', 'dist', 'HealthyLife.Popup.exe')
+const PLUGIN_DIR = path.dirname(fileURLToPath(import.meta.url))
+const PACKAGE_FILE = path.join(PLUGIN_DIR, 'package.json')
 const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run'
 const RUN_VALUE = 'HealthyLife'
 
@@ -252,6 +254,7 @@ function defaultState() {
     login: { applied: false, error: '', checkedAt: 0 },
     dismissed: '',
     health: null,
+    lastDshVersion: '',
     platform: { user: process.env.USERNAME || '', host: os.hostname(), elevated: null, dark: true }
   }
 }
@@ -768,6 +771,92 @@ async function runSelfCheck(host) {
   return { checkedAt: Date.now(), dshVersion, api, popup, warnings }
 }
 
+/**
+ * DSH 升级后：版本变了就重跑自检。接口都在时把新版本写进兼容声明，
+ * 否则留一条告警让人看见——自动改代码做不到，能自动的是「发现 + 声明 + 上报」。
+ */
+async function guardDshVersion(previousHealth) {
+  const current = state.health && state.health.dshVersion
+  if (!current) return
+  const previous = (previousHealth && previousHealth.dshVersion) || state.lastDshVersion || ''
+  if (previous === current) return
+  state.lastDshVersion = current
+  if (!previous) {
+    remember('health', `首次记录 DSH 版本：${current}`)
+    scheduleSave()
+    return
+  }
+  const warnings = (state.health && state.health.warnings) || []
+  if (warnings.length === 0) {
+    const declared = await declareCompatibility(current)
+    remember(declared ? 'version' : 'error', declared
+      ? `DSH 已更新到 ${current}：自检通过，兼容声明已更新`
+      : `DSH 已更新到 ${current}：自检通过，但兼容声明写入失败`)
+  } else {
+    remember('version', `DSH 已更新到 ${current}：自检发现 ${warnings.length} 个问题（${warnings[0]}）`)
+  }
+  scheduleSave()
+}
+
+/** 版本不在兼容表里时 DSH 可能拒绝加载插件，所以自检通过就自动补一行。 */
+async function declareCompatibility(version) {
+  try {
+    const raw = await readFile(PACKAGE_FILE, 'utf8')
+    const pkg = JSON.parse(raw)
+    const compatibility = { ...((pkg.dsh && pkg.dsh.compatibility) || {}) }
+    const releases = { ...(compatibility.dshReleases || {}) }
+    if (releases[version] === 'compatible') return true
+    releases[version] = 'compatible'
+    pkg.dsh = { ...(pkg.dsh || {}), compatibility: { ...compatibility, dshReleases: releases } }
+    await writeFile(PACKAGE_FILE, JSON.stringify(pkg, null, 2) + '\n', 'utf8')
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 一键发布：插件目录的改动由宿主进程提交并推送（不经过工具沙箱）。 */
+/** git 可能来自 MinGit、niubash 或 Program Files，逐个探测可用的那个。 */
+async function resolveGit() {
+  const candidates = ['git.exe', 'C:\\Program Files\\Git\\cmd\\git.exe']
+  for (const bin of candidates) {
+    const probe = await run(bin, ['--version'], 10000)
+    if (probe.ok) return bin
+  }
+  return ''
+}
+
+async function publishToGithub() {
+  const dir = PLUGIN_DIR
+  const bin = await resolveGit()
+  if (!bin) return { ok: false, error: '找不到 git，请先安装 Git for Windows' }
+  const git = (args, timeout = 30000) => run(bin, ['-C', dir, ...args], timeout)
+  const probe = await git(['rev-parse', '--is-inside-work-tree'], 10000)
+  if (!probe.ok || !/true/.test(probe.stdout)) return { ok: false, error: '插件目录不是 git 仓库' }
+  const status = await git(['status', '--porcelain'], 15000)
+  if (!status.ok) return { ok: false, error: `git status 失败：${status.stderr || status.stdout}` }
+  const dirty = status.stdout.trim().length > 0
+  const ahead = await git(['rev-list', '--count', '@{u}..HEAD'], 15000)
+  const aheadCount = ahead.ok ? Number((ahead.stdout || '0').trim()) || 0 : 0
+  if (!dirty && aheadCount === 0) return { ok: false, error: '没有需要发布的改动' }
+  if (dirty) {
+    const added = await git(['add', '-A'], 30000)
+    if (!added.ok) return { ok: false, error: `git add 失败：${added.stderr || added.stdout}` }
+    const version = state.health && state.health.dshVersion ? `（DSH ${state.health.dshVersion}）` : ''
+    const message = `chore: 同步插件更新${version}`
+    const committed = await git(['commit', '-m', message], 30000)
+    if (!committed.ok && !/nothing to commit/i.test(String(committed.stdout) + String(committed.stderr))) {
+      return { ok: false, error: `git commit 失败：${committed.stderr || committed.stdout}` }
+    }
+  }
+  const pushed = await git(['push'], 90000)
+  if (!pushed.ok) return { ok: false, error: `git push 失败：${(pushed.stderr || pushed.stdout || '').slice(-400)}` }
+  const head = await git(['rev-parse', '--short', 'HEAD'], 10000)
+  const commit = (head.stdout || '').trim()
+  remember('publish', `已发布到 GitHub：${commit}`)
+  return { ok: true, commit }
+}
+
 async function applyLogonBlock() {
   const spec = logonHoursSpec(state.config)
   if (!spec) {
@@ -1253,6 +1342,12 @@ function makeHandler() {
         return
       }
 
+      if (route === '/publish' || route === '/publish/') {
+        const result = await publishToGithub()
+        sendJson(res, result.ok ? 200 : 500, { ...result, state: publicState() })
+        return
+      }
+
       if (route === '/selfcheck' || route === '/selfcheck/') {
         state.health = await runSelfCheck(hostCtx)
         remember('health', state.health.warnings.length
@@ -1311,7 +1406,9 @@ export function apply(ctx) {
   void loadState().then(async () => {
     state.platform.elevated = await detectElevation()
     state.platform.dark = await detectDark()
+    const previousHealth = state.health
     state.health = await runSelfCheck(ctx)
+    await guardDshVersion(previousHealth)
     await cleanupLegacyTasks()
     if (state.config.autoStart) await ensureLaunchTask()
     await run('reg.exe', ['delete', RUN_KEY, '/v', RUN_VALUE, '/f'])

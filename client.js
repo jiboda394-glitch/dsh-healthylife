@@ -287,6 +287,9 @@ window.__ModuleLoader__.load({
 
         failure ? h('p', { className: 'hl-error' }, `无法连接插件内核：${failure}`) : null,
         notice ? h('p', { className: 'hl-error' }, notice) : null,
+        data && data.health && data.health.warnings && data.health.warnings.length
+          ? h('p', { className: 'hl-error' }, `接口告警：${data.health.warnings.join('；')}`)
+          : null,
 
         h(Card, { title: '当前状态' },
           h('div', { className: 'hl-status' },
@@ -415,6 +418,11 @@ window.__ModuleLoader__.load({
             : h('div', { className: 'hl-empty' }, '尚未自检'),
           h('div', { className: 'hl-actions' },
             h('button', { type: 'button', className: 'hl-btn', disabled: busy === 'selfcheck', onClick: () => void action('selfcheck', {}, 'selfcheck') }, '重新自检'))),
+
+        h(Card, { title: '发布到 GitHub' },
+          h('p', { className: 'hl-hint' }, '把插件目录的改动提交并推送到 github.com/jiboda394-glitch/dsh-healthylife。由宿主进程执行，不需要开终端。'),
+          h('div', { className: 'hl-actions' },
+            h('button', { type: 'button', className: 'hl-btn hl-btn-primary', disabled: busy === 'publish', onClick: () => void action('publish', {}, 'publish') }, '提交并推送'))),
 
         h(Card, { title: '最近记录' },
           data && data.history && data.history.length

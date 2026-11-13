@@ -11,3 +11,6 @@ native/Popup/bin/
 # 编辑器
 .vs/
 *.user
+
+# 临时脚本（发布按钮用 git add -A，避免误提交）
+_*.cjs
