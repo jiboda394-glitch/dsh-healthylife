@@ -350,6 +350,12 @@ window.__ModuleLoader__.load({
               ariaLabel: '倒计时时长',
               options: [15, 30, 60, 120].map((n) => ({ value: String(n), label: `${n} 秒` })),
               onChange: (value) => void patch({ countdownSeconds: Number(value) }, 'countdown')
+            })),
+          h(Row, { title: '提醒可直接取消', desc: '在「还有 N 分钟」的提醒弹窗里就能点取消本次，不必等到倒计时；同样消耗一次配额' },
+            h(Switch, {
+              checked: config ? config.warnCancel !== false : true,
+              label: '提醒可直接取消',
+              onChange: (value) => void patch({ warnCancel: value }, 'warnCancel')
             }))),
 
         h(Card, { title: '取消配额' },

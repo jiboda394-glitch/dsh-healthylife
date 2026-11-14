@@ -54,7 +54,8 @@ const DEFAULT_CONFIG = {
   countdownSeconds: 30,
   nightQuota: 1,
   weekQuota: 3,
-  loginBlock: true
+  loginBlock: true,
+  warnCancel: true
 }
 
 /** Fixed exemption scenarios: detected automatically, never user-editable. */
@@ -703,6 +704,7 @@ async function showPopup(phase, target) {
     countdownSeconds: Math.max(5, Number(state.config.countdownSeconds) || 30),
     minutesLeft: Math.max(1, Math.ceil((target.start - Date.now()) / MINUTE)),
     quotaLeft: quotaLeft(),
+    warnCancel: state.config.warnCancel !== false,
     windowStart: hhmm(target.start),
     windowEnd: hhmm(target.end),
     dark: state.platform.dark !== false
@@ -724,6 +726,7 @@ async function showPreviewPopup(phase, seconds) {
     countdownSeconds: seconds,
     minutesLeft: Math.max(1, Math.ceil((upcoming.start - now) / MINUTE)),
     quotaLeft: quotaLeft(),
+    warnCancel: state.config.warnCancel !== false,
     windowStart: hhmm(upcoming.start),
     windowEnd: hhmm(upcoming.end),
     dark: state.platform.dark !== false
@@ -1043,6 +1046,18 @@ async function tickInner() {
 
   resetNightIfNeeded(dayKey(target.start), target.start, countdownMs)
 
+  // 取消/豁免可能在提醒阶段就发生：先于 guard 与提醒分支判断，否则会被重新拉回 warning。
+  if (night.resolved === 'cancel' || night.resolved === 'exempt') {
+    // 重启后 state.login.applied 可能还是 true（取消时恢复失败的残留），这里补一次
+    if (state.login.applied && loginRestoredNight !== night.key) {
+      loginRestoredNight = night.key
+      await restoreLogon()
+    }
+    setPhase(night.resolved === 'cancel' ? 'skipped' : 'exempt', night.resolved === 'cancel' ? '' : night.reason)
+    hidePopup()
+    return
+  }
+
   const guardFrom = target.start - guardMs
   if (now >= guardFrom && now < target.end && guardedNight !== night.key) {
     guardedNight = night.key
@@ -1069,16 +1084,6 @@ async function tickInner() {
     return
   }
 
-  if (night.resolved === 'cancel' || night.resolved === 'exempt') {
-    // 重启后 state.login.applied 可能还是 true（取消时恢复失败的残留），这里补一次
-    if (state.login.applied && loginRestoredNight !== night.key) {
-      loginRestoredNight = night.key
-      await restoreLogon()
-    }
-    setPhase(night.resolved === 'cancel' ? 'skipped' : 'exempt', night.resolved === 'cancel' ? '' : night.reason)
-    hidePopup()
-    return
-  }
 
   if (now < night.deadline) {
     if (!shutdownIssued) {
@@ -1232,6 +1237,7 @@ function sanitizeConfig(patch) {
   next.autoStart = next.autoStart === true
   next.curfewEnabled = next.curfewEnabled === true
   next.loginBlock = next.loginBlock === true
+  next.warnCancel = next.warnCancel !== false
   return next
 }
 

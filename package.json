@@ -10,14 +10,31 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
-  "files": ["index.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "native/dist/**", "!native/dist/popup.log"],
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "native/dist/**",
+    "!native/dist/popup.log"
+  ],
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
-    "compatibility": { "dshReleases": { "0.2.2-rc.1": "compatible" } },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.2-rc.1": "compatible",
+        "0.2.2-rc.3": "compatible"
+      }
+    },
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": ["@deepseek-ai/dsh-client-connection"]
+      "inject": [
+        "@deepseek-ai/dsh-client-connection"
+      ]
     }
   }
 }

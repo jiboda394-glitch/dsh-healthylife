@@ -185,6 +185,15 @@ namespace HealthyLife.Popup
             else
             {
                 var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+                // 提醒阶段就能用掉一次取消配额，不必等到倒计时；配额为 0 时不显示按钮。
+                if (options.WarnCancel && options.QuotaLeft > 0)
+                {
+                    row.Children.Add(MakeButton("取消本次", palette.SurfaceAlt, palette.Accent, async () =>
+                    {
+                        Log("click-cancel-warning");
+                        await Act("cancel");
+                    }, 34, 88, new Thickness(0, 0, 8, 0)));
+                }
                 row.Children.Add(MakeButton("知道了", palette.SurfaceAlt, palette.Text, () =>
                 {
                     Log("click-dismiss");
