@@ -270,6 +270,7 @@ let night = { key: '', resolved: '', reason: '', deadline: 0, extended: false }
 let guardedNight = ''
 let preview = { phase: '', from: 0, until: 0 }
 let previewing = false
+let loginRestoredNight = ''
 let popupProc = null
 let popupKey = ''
 let warningShown = ''
@@ -314,19 +315,32 @@ async function loadState() {
   }
 }
 
+async function writeStateFile() {
+  try {
+    await mkdir(STATE_DIR, { recursive: true })
+    const tmp = `${STATE_FILE}.tmp`
+    await writeFile(tmp, JSON.stringify(state, null, 2), 'utf8')
+    await rename(tmp, STATE_FILE)
+  } catch {
+    /* storage unavailable: state stays in memory */
+  }
+}
+
 function scheduleSave() {
   if (saveTimer) return
-  saveTimer = setTimeout(async () => {
+  saveTimer = setTimeout(() => {
     saveTimer = null
-    try {
-      await mkdir(STATE_DIR, { recursive: true })
-      const tmp = `${STATE_FILE}.tmp`
-      await writeFile(tmp, JSON.stringify(state, null, 2), 'utf8')
-      await rename(tmp, STATE_FILE)
-    } catch {
-      /* storage unavailable: state stays in memory */
-    }
+    writeStateFile()
   }, 400)
+}
+
+/** 关键决策（取消/豁免/关机）必须立刻落盘：守护随时可能重启 DSH，晚 400ms 就够丢状态。 */
+async function saveNow() {
+  if (saveTimer) {
+    clearTimeout(saveTimer)
+    saveTimer = null
+  }
+  await writeStateFile()
 }
 
 function remember(type, detail) {
@@ -968,12 +982,30 @@ function setPhase(phase, reason = '') {
 
 function resetNightIfNeeded(key, start, countdownMs) {
   if (night.key === key) return
-  night = { key, resolved: '', reason: '', deadline: start + countdownMs, extended: false }
+  // 取消/豁免必须能跨进程存活：守护会在夜里把 DSH 重启好几次，
+  // 只存在内存里的话，重启那一刻取消失效、倒计时会重新武装。
+  const saved = (state.nights && state.nights[key]) || ''
+  const resolved = saved === 'cancel' || saved === 'exempt' ? saved : ''
+  night = {
+    key,
+    resolved,
+    reason: resolved === 'exempt' ? (state.exemptTonight && state.exemptTonight.label) || '自动场景' : '',
+    deadline: start + countdownMs,
+    extended: false
+  }
   shutdownIssued = false
   shutdownFired = false
   guardedNight = ''
   warningShown = ''
+  loginRestoredNight = ''
   state.unsaved = null
+  pruneNights()
+}
+
+/** state.nights 按天累积，只保留最近 60 晚，避免无限增长。 */
+function pruneNights() {
+  const keys = Object.keys(state.nights || {}).sort()
+  while (keys.length > 60) delete state.nights[keys.shift()]
 }
 
 async function tickInner() {
@@ -1037,13 +1069,13 @@ async function tickInner() {
     return
   }
 
-  if (night.resolved === 'cancel') {
-    setPhase('skipped')
-    hidePopup()
-    return
-  }
-  if (night.resolved === 'exempt') {
-    setPhase('exempt', night.reason)
+  if (night.resolved === 'cancel' || night.resolved === 'exempt') {
+    // 重启后 state.login.applied 可能还是 true（取消时恢复失败的残留），这里补一次
+    if (state.login.applied && loginRestoredNight !== night.key) {
+      loginRestoredNight = night.key
+      await restoreLogon()
+    }
+    setPhase(night.resolved === 'cancel' ? 'skipped' : 'exempt', night.resolved === 'cancel' ? '' : night.reason)
     hidePopup()
     return
   }
@@ -1055,6 +1087,7 @@ async function tickInner() {
         state.exemptTonight = exemption
         state.nights[night.key] = 'exempt'
         useQuota('exempt', `自动豁免：${exemption.label}`)
+        await saveNow()
         night = { ...night, resolved: 'exempt', reason: exemption.label }
         if (state.login.applied) await restoreLogon()
         setPhase('exempt', exemption.label)
@@ -1298,6 +1331,7 @@ function makeHandler() {
         useQuota('cancel', '本次关机已取消')
         night = { ...night, resolved: 'cancel', reason: '' }
         state.nights[night.key || dayKey(now)] = 'cancel'
+        await saveNow()
         if (state.login.applied) await restoreLogon()
         setPhase('skipped')
         hidePopup()
