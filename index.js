@@ -142,6 +142,16 @@ function dayKey(ts) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
+/**
+ * 凌晨的宵禁算前一天晚上：一周从「周一早上 6 点」开始算，
+ * 否则零点一到周配额就归零，周日那一夜的宵禁总能凭空多出一次取消。
+ */
+const NIGHT_DAY_SHIFT_MS = 6 * 60 * 60 * 1000
+
+function weekKeyForNight(start) {
+  return weekKey(start - NIGHT_DAY_SHIFT_MS)
+}
+
 function weekKey(ts) {
   const d = new Date(ts)
   d.setHours(0, 0, 0, 0)
@@ -246,7 +256,7 @@ function defaultState() {
     config: { ...DEFAULT_CONFIG, days: defaultDays() },
     phase: 'idle',
     reason: '',
-    quota: { nightKey: dayKey(Date.now()), nightUsed: 0, weekKey: weekKey(Date.now()), weekUsed: 0 },
+    quota: { nightKey: dayKey(Date.now()), nightUsed: 0, weekKey: weekKeyForNight(Date.now()), weekUsed: 0 },
     exemptTonight: null,
     nights: {},
     recentExits: [],
@@ -356,7 +366,8 @@ function rollQuota(now) {
   // and a spent quota from last night must not leak into the upcoming window.
   const reference = intervalAt(now, state.config.days) || nextInterval(now, state.config.days)
   const nightKeyValue = dayKey(reference ? reference.start : now)
-  const weekKeyValue = weekKey(now)
+  // 周归属跟着「这一夜」走，而不是跟着 now：00:30 取消仍算前一晚那一周。
+  const weekKeyValue = weekKeyForNight(reference ? reference.start : now)
   if (state.quota.nightKey !== nightKeyValue) {
     state.quota.nightKey = nightKeyValue
     state.quota.nightUsed = 0
@@ -1331,7 +1342,9 @@ function makeHandler() {
           return
         }
         if (quotaLeft() <= 0) {
-          sendJson(res, 200, { ok: false, error: '取消配额已用完', state: publicState(now) })
+          const nightLeft = Math.max(0, Number(state.config.nightQuota) - state.quota.nightUsed)
+          const error = nightLeft <= 0 ? '今晚的取消配额已用完' : '本周的取消配额已用完（周一宵禁结束后重置）'
+          sendJson(res, 200, { ok: false, error, state: publicState(now) })
           return
         }
         useQuota('cancel', '本次关机已取消')

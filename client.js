@@ -361,7 +361,7 @@ window.__ModuleLoader__.load({
         h(Card, { title: '取消配额' },
           h(Row, { title: '每晚可取消', desc: '同一晚最多取消几次，用完只能关机' },
             h(Select, { value: config ? String(config.nightQuota) : '1', options: numberOptions(3), ariaLabel: '每晚可取消', disabled: locked, onChange: (value) => void patch({ nightQuota: Number(value) }, 'nightQuota') })),
-          h(Row, { title: '每周可取消', desc: '跨天累计上限，豁免同样计入' },
+          h(Row, { title: '每周可取消', desc: '跨天累计上限，豁免同样计入；周一宵禁结束后归零' },
             h(Select, { value: config ? String(config.weekQuota) : '3', options: numberOptions(10), ariaLabel: '每周可取消', disabled: locked, onChange: (value) => void patch({ weekQuota: Number(value) }, 'weekQuota') })),
           h(Row, { title: '重置配额', desc: '手动把今晚与本周的已用次数清零' },
             h('button', { type: 'button', className: 'hl-btn', disabled: busy === 'reset', onClick: () => void action('reset-quota', {}, 'reset') }, '重置'))),
