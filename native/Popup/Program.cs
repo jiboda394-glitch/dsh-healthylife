@@ -39,6 +39,8 @@ namespace HealthyLife.Popup
         public int MinutesLeft = 10;
         public int QuotaLeft = 0;
         public bool WarnCancel = true;
+        public bool CanSnooze = false;
+        public int SnoozeMinutes = 30;
         public string WindowStart = "01:00";
         public string WindowEnd = "05:00";
         public bool Dark = true;
@@ -66,6 +68,8 @@ namespace HealthyLife.Popup
                 options.MinutesLeft = (int)ReadLong(root, "minutesLeft", options.MinutesLeft);
                 options.QuotaLeft = (int)ReadLong(root, "quotaLeft", options.QuotaLeft);
                 options.WarnCancel = ReadBool(root, "warnCancel", options.WarnCancel);
+                options.CanSnooze = ReadBool(root, "canSnooze", options.CanSnooze);
+                options.SnoozeMinutes = (int)ReadLong(root, "snoozeMinutes", options.SnoozeMinutes);
                 options.WindowStart = ReadString(root, "windowStart", options.WindowStart);
                 options.WindowEnd = ReadString(root, "windowEnd", options.WindowEnd);
                 options.Dark = ReadBool(root, "dark", options.Dark);

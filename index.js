@@ -41,6 +41,9 @@ const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '�
 const DAY_NAMES = ['Su', 'M', 'T', 'W', 'Th', 'F', 'Sa']
 const GUARD_MINUTES = 60
 const UNSAVED_EXTENSION_SECONDS = 30
+/** 弹窗上的「延长半小时」：每晚一次，不占取消配额。 */
+const SNOOZE_MINUTES = 30
+const SNOOZE_MS = SNOOZE_MINUTES * MINUTE
 
 function defaultDays() {
   return Array.from({ length: 7 }, () => ({ enabled: true, start: '01:00', end: '05:00' }))
@@ -258,6 +261,7 @@ function defaultState() {
     reason: '',
     quota: { nightKey: dayKey(Date.now()), nightUsed: 0, weekKey: weekKeyForNight(Date.now()), weekUsed: 0 },
     exemptTonight: null,
+    snooze: { key: '', until: 0 },
     nights: {},
     recentExits: [],
     unsaved: null,
@@ -318,6 +322,7 @@ async function loadState() {
       config: merged,
       quota: { ...defaultState().quota, ...(saved.quota || {}) },
       login: { ...defaultState().login, ...(saved.login || {}) },
+      snooze: { ...defaultState().snooze, ...(saved.snooze || {}) },
       platform: { ...defaultState().platform, ...(saved.platform || {}) }
     }
     rollQuota(Date.now())
@@ -377,6 +382,11 @@ function rollQuota(now) {
     state.quota.weekKey = weekKeyValue
     state.quota.weekUsed = 0
   }
+}
+
+/** 延长半小时是每晚一次的独立额度，不消耗取消配额。 */
+function snoozeUsed() {
+  return Boolean(state.snooze && state.snooze.key && state.snooze.key === night.key && Number(state.snooze.until) > 0)
 }
 
 function quotaLeft() {
@@ -716,6 +726,8 @@ async function showPopup(phase, target) {
     minutesLeft: Math.max(1, Math.ceil((target.start - Date.now()) / MINUTE)),
     quotaLeft: quotaLeft(),
     warnCancel: state.config.warnCancel !== false,
+    canSnooze: !snoozeUsed(),
+    snoozeMinutes: SNOOZE_MINUTES,
     windowStart: hhmm(target.start),
     windowEnd: hhmm(target.end),
     dark: state.platform.dark !== false
@@ -738,6 +750,8 @@ async function showPreviewPopup(phase, seconds) {
     minutesLeft: Math.max(1, Math.ceil((upcoming.start - now) / MINUTE)),
     quotaLeft: quotaLeft(),
     warnCancel: state.config.warnCancel !== false,
+    canSnooze: !snoozeUsed(),
+    snoozeMinutes: SNOOZE_MINUTES,
     windowStart: hhmm(upcoming.start),
     windowEnd: hhmm(upcoming.end),
     dark: state.platform.dark !== false
@@ -1000,11 +1014,13 @@ function resetNightIfNeeded(key, start, countdownMs) {
   // 只存在内存里的话，重启那一刻取消失效、倒计时会重新武装。
   const saved = (state.nights && state.nights[key]) || ''
   const resolved = saved === 'cancel' || saved === 'exempt' ? saved : ''
+  const snoozeUntil = state.snooze && state.snooze.key === key ? Number(state.snooze.until) || 0 : 0
   night = {
     key,
     resolved,
+    snoozed: snoozeUntil > 0,
     reason: resolved === 'exempt' ? (state.exemptTonight && state.exemptTonight.label) || '自动场景' : '',
-    deadline: start + countdownMs,
+    deadline: Math.max(start + countdownMs, snoozeUntil),
     extended: false
   }
   shutdownIssued = false
@@ -1069,10 +1085,17 @@ async function tickInner() {
     return
   }
 
+  // 延长期间保持安静：不弹提醒、不进倒计时，到点前 countdownMs 才重新提示。
+  if (night.snoozed && now < night.deadline - countdownMs) {
+    setPhase('snoozed')
+    hidePopup()
+    return
+  }
+
   const guardFrom = target.start - guardMs
   if (now >= guardFrom && now < target.end && guardedNight !== night.key) {
     guardedNight = night.key
-    await spawnGuard(target.start + countdownMs + UNSAVED_EXTENSION_SECONDS * 1000 + 60000)
+    await spawnGuard(Math.max(target.start + countdownMs, night.deadline) + UNSAVED_EXTENSION_SECONDS * 1000 + 60000)
   }
 
   if (now < guardFrom) {
@@ -1190,6 +1213,11 @@ function publicState(now = Date.now()) {
       nightQuota: state.config.nightQuota,
       weekQuota: state.config.weekQuota,
       left: quotaLeft()
+    },
+    snooze: {
+      used: snoozeUsed(),
+      until: snoozeUsed() ? Number(state.snooze.until) : 0,
+      minutes: SNOOZE_MINUTES
     },
     window: shown ? { start: shown.start, end: shown.end, dayIdx: shown.dayIdx } : null,
     active: Boolean(current),
@@ -1330,6 +1358,29 @@ function makeHandler() {
         scheduleSave()
         await tick()
         sendJson(res, 200, publicState())
+        return
+      }
+
+      if (route === '/snooze' || route === '/snooze/') {
+        const now = Date.now()
+        if (previewing) {
+          previewing = false
+          hidePopup()
+          sendJson(res, 200, { ok: true, preview: true, state: publicState(now) })
+          return
+        }
+        if (snoozeUsed()) {
+          sendJson(res, 200, { ok: false, error: '今晚已经延长过一次了', state: publicState(now) })
+          return
+        }
+        const until = now + SNOOZE_MS
+        state.snooze = { key: night.key || dayKey(now), until }
+        night = { ...night, snoozed: true, deadline: Math.max(night.deadline, until) }
+        guardedNight = ''
+        await saveNow()
+        remember('snooze', `延长 ${SNOOZE_MINUTES} 分钟，${hhmm(until)} 再提醒`)
+        hidePopup()
+        sendJson(res, 200, { ok: true, until, state: publicState(now) })
         return
       }
 

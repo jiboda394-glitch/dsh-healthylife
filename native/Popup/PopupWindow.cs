@@ -178,13 +178,22 @@ namespace HealthyLife.Popup
             var actions = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 10, 0, 0) };
             if (countdownMode)
             {
-                actions.Children.Add(MakeButton("立即关机", palette.Danger, Brushes.White, async () => await Act("shutdown"), 42));
-                cancelButton = MakeButton(CancelLabel(), palette.SurfaceAlt, palette.Text, async () => await Act("cancel"), 42);
+                actions.Children.Add(MakeButton("立即关机", palette.Danger, Brushes.White, async () => await Act("shutdown"), 42, 0, new Thickness(0, 0, 0, 8)));
+                cancelButton = MakeButton(CancelLabel(), palette.SurfaceAlt, palette.Text, async () => await Act("cancel"), 42, 0, new Thickness(0, 0, 0, options.CanSnooze ? 8 : 0));
                 actions.Children.Add(cancelButton);
+                if (options.CanSnooze)
+                {
+                    actions.Children.Add(MakeButton(SnoozeLabel(), palette.SurfaceAlt, palette.Accent, async () => await Act("snooze"), 42));
+                }
             }
             else
             {
                 var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+                // 延长半小时：每晚一次、不占取消配额，提醒阶段也能点。
+                if (options.CanSnooze)
+                {
+                    row.Children.Add(MakeButton(SnoozeLabel(), palette.SurfaceAlt, palette.Accent, async () => await Act("snooze"), 34, 88, new Thickness(0, 0, 8, 0)));
+                }
                 // 提醒阶段就能用掉一次取消配额，不必等到倒计时；配额为 0 时不显示按钮。
                 if (options.WarnCancel && options.QuotaLeft > 0)
                 {
@@ -220,6 +229,9 @@ namespace HealthyLife.Popup
 
         private string CancelLabel()
             => options.QuotaLeft > 0 ? $"取消本次（今晚还剩 {options.QuotaLeft} 次）" : "取消次数已用完";
+
+        private string SnoozeLabel()
+            => options.SnoozeMinutes == 30 ? "延长半小时" : $"延长 {options.SnoozeMinutes} 分钟";
 
         private UIElement BuildHeader()
         {
@@ -384,6 +396,7 @@ namespace HealthyLife.Popup
 
         private async Task Act(string action)
         {
+            Log($"act {action}");
             try
             {
                 var payload = action == "cancel" ? "{}" : "{}";

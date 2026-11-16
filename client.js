@@ -74,6 +74,12 @@ window.__ModuleLoader__.load({
       return start ? `待 ${start} 应用` : '未到时段'
     }
 
+    function snoozeText(data) {
+      if (!data || !data.snooze) return '—'
+      if (!data.snooze.used) return `今晚可用，推迟 ${data.snooze.minutes} 分钟`
+      return `今晚已用过（延长到 ${clockText(data.snooze.until)}）`
+    }
+
     function humanGap(ms) {
       if (!Number.isFinite(ms) || ms <= 0) return '已到点'
       const total = Math.round(ms / 60000)
@@ -89,6 +95,7 @@ window.__ModuleLoader__.load({
       countdown: '宵禁倒计时中',
       skipped: '本次已取消',
       exempt: '本次已豁免',
+      snoozed: '本次已延长',
       shutdown: '已下发关机'
     }
 
@@ -197,6 +204,7 @@ window.__ModuleLoader__.load({
       if (phase === 'countdown' || phase === 'shutdown') return 'is-countdown'
       if (phase === 'warning') return 'is-warning'
       if (phase === 'skipped' || phase === 'exempt') return 'is-ok'
+      if (phase === 'snoozed') return 'is-warning'
       return ''
     }
 
@@ -212,6 +220,7 @@ window.__ModuleLoader__.load({
       if (phase === 'countdown' || phase === 'extended') return { title: '宵禁倒计时中', desc: '桌面弹窗正在等待你的选择，未操作将在倒计时结束后关机' }
       if (phase === 'skipped') return { title: '本次已取消', desc: `今晚剩余 ${data.quota.left} 次取消机会` }
       if (phase === 'exempt') return { title: `本次已豁免：${data.reason || '自动场景'}`, desc: '豁免已占用一次取消次数' }
+      if (phase === 'snoozed') return { title: '已延长半小时', desc: `弹窗暂时收起，${clockText(data.deadline)} 再次提醒（每晚只能延长一次）` }
       if (phase === 'shutdown') return { title: '已下发关机指令', desc: `电脑即将关闭，${end} 后恢复可用` }
       return { title: PHASE_TEXT[phase] || phase, desc: '' }
     }
@@ -363,6 +372,8 @@ window.__ModuleLoader__.load({
             h(Select, { value: config ? String(config.nightQuota) : '1', options: numberOptions(3), ariaLabel: '每晚可取消', disabled: locked, onChange: (value) => void patch({ nightQuota: Number(value) }, 'nightQuota') })),
           h(Row, { title: '每周可取消', desc: '跨天累计上限，豁免同样计入；周一宵禁结束后归零' },
             h(Select, { value: config ? String(config.weekQuota) : '3', options: numberOptions(10), ariaLabel: '每周可取消', disabled: locked, onChange: (value) => void patch({ weekQuota: Number(value) }, 'weekQuota') })),
+          h(Row, { title: '延长半小时', desc: '弹窗里点「延长半小时」推迟 30 分钟再提醒，每晚一次，不占取消配额' },
+            h('span', { className: 'hl-hint' }, snoozeText(data))),
           h(Row, { title: '重置配额', desc: '手动把今晚与本周的已用次数清零' },
             h('button', { type: 'button', className: 'hl-btn', disabled: busy === 'reset', onClick: () => void action('reset-quota', {}, 'reset') }, '重置'))),
 
