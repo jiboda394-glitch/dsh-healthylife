@@ -163,68 +163,107 @@ namespace HealthyLife.Popup
                 stack.Children.Add(BuildRing());
                 stack.Children.Add(Text(
                     $"{DayPrefix()}{options.WindowStart} – {options.WindowEnd} 为宵禁时段，期间开机将停留在锁屏界面。",
-                    12.5, palette.Muted, new Thickness(0, 2, 0, 18), TextAlignment.Center));
+                    12.5, palette.Muted, new Thickness(0, 0, 0, 12), TextAlignment.Center));
             }
             else
             {
                 stack.Children.Add(Text(
                     $"{DayPrefix()}{options.WindowStart} 将自动关机，现在可以保存手头的工作。",
-                    13, palette.Muted, new Thickness(0, 8, 0, 16), TextAlignment.Left));
+                    13, palette.Muted, new Thickness(0, 8, 0, 2), TextAlignment.Left));
             }
 
-            errorText = Text("", 12, palette.Danger, new Thickness(0, 10, 0, 0), TextAlignment.Center);
+            errorText = Text("", 12, palette.Danger, new Thickness(0, 6, 0, 0), TextAlignment.Center);
             stack.Children.Add(errorText);
 
-            var actions = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 10, 0, 0) };
             if (countdownMode)
             {
-                actions.Children.Add(MakeButton("立即关机", palette.Danger, Brushes.White, async () => await Act("shutdown"), 42, 0, new Thickness(0, 0, 0, 8)));
-                cancelButton = MakeButton(CancelLabel(), palette.SurfaceAlt, palette.Text, async () => await Act("cancel"), 42, 0, new Thickness(0, 0, 0, options.CanSnooze ? 8 : 0));
-                actions.Children.Add(cancelButton);
-                if (options.CanSnooze)
-                {
-                    actions.Children.Add(MakeButton(SnoozeLabel(), palette.SurfaceAlt, palette.Accent, async () => await Act("snooze"), 42));
-                }
+                stack.Children.Add(Text(CountdownHint(), 11.5, palette.Muted, new Thickness(0, 12, 0, 12), TextAlignment.Center));
+
+                var shutdown = MakeButton("立即关机", palette.Danger, Brushes.White, async () => await Act("shutdown"), 44);
+                shutdown.Margin = new Thickness(0, 0, 0, 8);
+                stack.Children.Add(shutdown);
+
+                var canCancel = options.QuotaLeft > 0;
+                cancelButton = MakeButton(
+                    canCancel ? "取消本次" : "取消次数已用完",
+                    palette.SurfaceAlt,
+                    canCancel ? palette.Accent : palette.Muted,
+                    async () => await Act("cancel"),
+                    40);
+                cancelButton.IsEnabled = canCancel;
+                stack.Children.Add(SplitRow(
+                    cancelButton,
+                    options.CanSnooze
+                        ? MakeButton(SnoozeLabel(), palette.SurfaceAlt, palette.Accent, async () => await Act("snooze"), 40)
+                        : null,
+                    400));
             }
             else
             {
-                var row = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-                // 延长半小时：每晚一次、不占取消配额，提醒阶段也能点。
-                if (options.CanSnooze)
+                var alter = SplitRow(
+                    options.CanSnooze
+                        ? MakeButton(SnoozeLabel(), palette.SurfaceAlt, palette.Accent, async () => await Act("snooze"), 32)
+                        : null,
+                    options.WarnCancel && options.QuotaLeft > 0
+                        ? MakeButton("取消本次", palette.SurfaceAlt, palette.Accent, async () =>
+                        {
+                            Log("click-cancel-warning");
+                            await Act("cancel");
+                        }, 32)
+                        : null,
+                    380);
+                if (alter != null)
                 {
-                    row.Children.Add(MakeButton(SnoozeLabel(), palette.SurfaceAlt, palette.Accent, async () => await Act("snooze"), 34, 88, new Thickness(0, 0, 8, 0)));
+                    alter.Margin = new Thickness(0, 12, 0, 0);
+                    stack.Children.Add(alter);
                 }
-                // 提醒阶段就能用掉一次取消配额，不必等到倒计时；配额为 0 时不显示按钮。
-                if (options.WarnCancel && options.QuotaLeft > 0)
-                {
-                    row.Children.Add(MakeButton("取消本次", palette.SurfaceAlt, palette.Accent, async () =>
-                    {
-                        Log("click-cancel-warning");
-                        await Act("cancel");
-                    }, 34, 88, new Thickness(0, 0, 8, 0)));
-                }
-                row.Children.Add(MakeButton("知道了", palette.SurfaceAlt, palette.Text, () =>
-                {
-                    Log("click-dismiss");
-                    closing = true;
-                    Close();
-                    Log("close-returned");
-                    return Task.CompletedTask;
-                }, 34, 96, new Thickness(0, 0, 8, 0)));
-                row.Children.Add(MakeButton("立即关机", palette.Danger, Brushes.White, async () => await Act("shutdown"), 34, 110, new Thickness(0, 0, 0, 0)));
-                actions.Children.Add(row);
-            }
-            stack.Children.Add(actions);
 
-            if (countdownMode)
-            {
-                stack.Children.Add(Text(
-                    "不做选择将在倒计时结束后关机",
-                    11.5, palette.Muted, new Thickness(0, 14, 0, 0), TextAlignment.Center));
+                var primary = SplitRow(
+                    MakeButton("知道了", palette.SurfaceAlt, palette.Text, () =>
+                    {
+                        Log("click-dismiss");
+                        closing = true;
+                        Close();
+                        Log("close-returned");
+                        return Task.CompletedTask;
+                    }, 38),
+                    MakeButton("立即关机", palette.Danger, Brushes.White, async () => await Act("shutdown"), 38),
+                    380);
+                primary.Margin = new Thickness(0, alter != null ? 8 : 12, 0, 0);
+                stack.Children.Add(primary);
             }
 
             card.Child = stack;
             return card;
+        }
+
+        /// <summary>One or two equal-width buttons on a single line; a lone button stretches to the full width.</summary>
+        private StackPanel SplitRow(Button first, Button second, double totalWidth)
+        {
+            if (first == null && second == null) return null;
+            var row = new StackPanel { Orientation = Orientation.Horizontal };
+            if (first == null || second == null)
+            {
+                var only = first ?? second;
+                only.Width = totalWidth;
+                row.Children.Add(only);
+                return row;
+            }
+            var half = (totalWidth - 8) / 2;
+            first.Width = half;
+            second.Width = half;
+            first.Margin = new Thickness(0, 0, 8, 0);
+            row.Children.Add(first);
+            row.Children.Add(second);
+            return row;
+        }
+
+        private string CountdownHint()
+        {
+            var tail = options.QuotaLeft > 0
+                ? $"今晚还剩 {options.QuotaLeft} 次取消机会"
+                : "今晚的取消次数已用完";
+            return $"不操作将在倒计时结束后关机 · {tail}";
         }
 
         private string CancelLabel()
