@@ -161,9 +161,12 @@ namespace HealthyLife.Popup
             if (countdownMode)
             {
                 stack.Children.Add(BuildRing());
+                var unsaved = !string.IsNullOrEmpty(options.Unsaved);
                 stack.Children.Add(Text(
-                    $"{DayPrefix()}{options.WindowStart} – {options.WindowEnd} 为宵禁时段，期间开机将停留在锁屏界面。",
-                    12.5, palette.Muted, new Thickness(0, 0, 0, 12), TextAlignment.Center));
+                    unsaved
+                        ? $"检测到 {options.Unsaved} 有未保存内容，请先保存。"
+                        : $"{DayPrefix()}{options.WindowStart} – {options.WindowEnd} 为宵禁时段，期间开机将停留在锁屏界面。",
+                    12.5, unsaved ? palette.Accent : palette.Muted, new Thickness(0, 0, 0, 12), TextAlignment.Center));
             }
             else
             {
@@ -191,12 +194,7 @@ namespace HealthyLife.Popup
                     async () => await Act("cancel"),
                     40);
                 cancelButton.IsEnabled = canCancel;
-                stack.Children.Add(SplitRow(
-                    cancelButton,
-                    options.CanSnooze
-                        ? MakeButton(SnoozeLabel(), palette.SurfaceAlt, palette.Accent, async () => await Act("snooze"), 40)
-                        : null,
-                    400));
+                stack.Children.Add(cancelButton);
             }
             else
             {
@@ -303,7 +301,9 @@ namespace HealthyLife.Popup
             });
             headline = new TextBlock
             {
-                Text = countdownMode ? "到点了，该休息了" : ReminderText(ReminderMinutes()),
+                Text = countdownMode
+                    ? (string.IsNullOrEmpty(options.Unsaved) ? "到点了，该休息了" : $"再给 {options.CountdownSeconds} 秒保存")
+                    : ReminderText(ReminderMinutes()),
                 FontSize = countdownMode ? 17 : 15,
                 FontWeight = FontWeights.SemiBold,
                 Foreground = palette.Text

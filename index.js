@@ -712,7 +712,7 @@ async function launchPopup(payload, key) {
   }
 }
 
-async function showPopup(phase, target) {
+async function showPopup(phase, target, extra = {}) {
   const key = `${phase}:${night.deadline}:${quotaLeft()}`
   if (popupKey === key && popupProc) return
   await launchPopup({
@@ -728,6 +728,7 @@ async function showPopup(phase, target) {
     warnCancel: state.config.warnCancel !== false,
     canSnooze: !snoozeUsed(),
     snoozeMinutes: SNOOZE_MINUTES,
+    unsaved: extra.unsaved ? String(extra.unsaved) : '',
     windowStart: hhmm(target.start),
     windowEnd: hhmm(target.end),
     dark: state.platform.dark !== false
@@ -1085,12 +1086,6 @@ async function tickInner() {
     return
   }
 
-  // 延长期间保持安静：不弹提醒、不进倒计时，到点前 countdownMs 才重新提示。
-  if (night.snoozed && now < night.deadline - countdownMs) {
-    setPhase('snoozed')
-    hidePopup()
-    return
-  }
 
   const guardFrom = target.start - guardMs
   if (now >= guardFrom && now < target.end && guardedNight !== night.key) {
@@ -1100,6 +1095,14 @@ async function tickInner() {
 
   if (now < guardFrom) {
     setPhase('idle')
+    hidePopup()
+    return
+  }
+
+  // 延长期间保持安静：不弹提醒、不进倒计时；但要先经过上面的守护启动，
+  // 否则延长这半小时里 DSH 被关掉就没有任何东西把它拉回来。
+  if (night.snoozed && now < night.deadline - countdownMs) {
+    setPhase('snoozed')
     hidePopup()
     return
   }
@@ -1151,7 +1154,7 @@ async function tickInner() {
         remember('extend', `检测到未保存内容（${apps.join('、')}），额外给 ${UNSAVED_EXTENSION_SECONDS} 秒保存`)
         setPhase('extended')
         hidePopup()
-        await showPopup('countdown', target)
+        await showPopup('countdown', target, { unsaved: apps.join('、') })
         return
       }
     }
