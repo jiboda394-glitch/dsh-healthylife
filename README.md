@@ -47,6 +47,11 @@ dsh plugin add github:jiboda394-glitch/dsh-healthylife
 - **弹窗需要 .NET 10 Desktop Runtime**：装不上时设置页自检会显示 ✗
 - 未保存文件检测是启发式的，只覆盖常见编辑器/Office 的窗口标题
 
+## 开机自启与任务栏图标
+
+- 登录时由计划任务 `HealthLifeLaunch` 以管理员身份运行 `launch-dsh.ps1`：等通知区域就绪 →（本机存在 `F:DSHToolsdsh-fixlaunch-dsh.ps1` 时）顺带清理过期的认证 Cookie → 启动 DSH；随后 `HealthLifeHide` 把窗口隐藏到托盘。
+- 任务栏与开始菜单的快捷方式指向 `open-dsh.vbs`，它静默触发同一个计划任务：DSH 已在跑就把被隐藏的窗口还原到前台，没在跑就启动。所以点图标**不会弹 UAC**，而 DSH 仍然是管理员权限（登录限制照常生效）。
+- 换成别的启动入口（直接双击 exe）时，因为 exe 带 `RUNASADMIN` 兼容性标记，仍会走一次 UAC；要恢复成直接启动，把快捷方式旁边的 `*.lnk.bak` 改回 `.lnk` 即可。
 ## 从源码构建弹窗
 
 ```powershell

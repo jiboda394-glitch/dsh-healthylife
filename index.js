@@ -474,6 +474,7 @@ const HIDE_TASK = 'HealthLife\\Hide'
 const GUARD_SCRIPT = path.join(STATE_DIR, 'guard.ps1')
 const HIDE_SCRIPT = path.join(STATE_DIR, 'hide-window.ps1')
 const LAUNCH_SCRIPT = path.join(STATE_DIR, 'launch-dsh.ps1')
+const OPEN_SCRIPT = path.join(STATE_DIR, 'open-dsh.vbs')
 
 /** The watchdog body, run by a scheduled task so it survives DSH being killed. */
 function guardScriptText(until) {
@@ -959,22 +960,64 @@ function hideScriptText() {
   ].join('\r\n')
 }
 
-/** 开机启动脚本：等通知区域就绪再拉起 DSH，避免托盘/窗口状态异常。 */
+/** 开机 / 点图标启动：已在跑就把被隐藏的窗口还原到前台，否则等通知区域就绪再启动。 */
 function launchScriptText() {
   const q = (value) => String(value).replace(/'/g, "''")
   const staged = 'F:\\DSH\\Tools\\dsh-fix\\launch-dsh.ps1'
+  const members = [
+    '[DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);',
+    'public delegate bool EnumProc(IntPtr h, IntPtr l);',
+    '[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);',
+    '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);',
+    '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);',
+    '[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);',
+    '[DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr h);',
+    '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);',
+    'public static IntPtr FindFor(int[] pids) {',
+    '  var set = new System.Collections.Generic.HashSet<int>(pids);',
+    '  IntPtr res = IntPtr.Zero;',
+    '  EnumWindows((h, l) => {',
+    '    uint pid; GetWindowThreadProcessId(h, out pid);',
+    '    if (set.Contains((int)pid) && GetWindowTextLength(h) > 0) { res = h; return false; }',
+    '    return true;',
+    '  }, IntPtr.Zero);',
+    '  return res;',
+    '}'
+  ].join(' ')
   return [
     "$ErrorActionPreference = 'SilentlyContinue'",
     `$exe = '${q(process.execPath)}'`,
     `$staged = '${q(staged)}'`,
+    `$log = '${q(path.join(STATE_DIR, 'launch.log'))}'`,
+    `Add-Type -Namespace HL -Name Win -MemberDefinition '${members}'`,
+    'function Write-Log([string]$m) { Add-Content -LiteralPath $log -Value ((Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fff") + " " + $m) }',
+    '# 已经在跑：把被隐藏的窗口还原到前台，不再启动第二个实例（也不会弹 UAC）。',
+    "\$pids = @(Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue | ForEach-Object { \$_.Id })",
+    'if ($pids.Count -gt 0) {',
+    '  $h = [HL.Win]::FindFor([int[]]$pids)',
+    '  Write-Log ("restore pids=" + $pids.Count + " hwnd=" + $h + " visible=" + [string][HL.Win]::IsWindowVisible($h))',
+    '  if ($h -ne [IntPtr]::Zero) {',
+    '    [void][HL.Win]::ShowWindow($h, 5)',
+    '    [void][HL.Win]::ShowWindow($h, 9)',
+    '    [void][HL.Win]::SetForegroundWindow($h)',
+    '  }',
+    '  exit',
+    '}',
     '# 本机有「清理过期认证 Cookie」的启动脚本时交给它，它自己也会等通知区域。',
-    'if (Test-Path -LiteralPath $staged) { & $staged; exit }',
-    `Add-Type -Namespace HL -Name Win -MemberDefinition '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);'`,
+    'if (Test-Path -LiteralPath $staged) { Write-Log "delegate staged"; & $staged; exit }',
     '$deadline = (Get-Date).AddSeconds(90)',
     "while ((Get-Date) -lt $deadline -and [HL.Win]::FindWindow('Shell_TrayWnd', $null) -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 200 }",
     'Start-Sleep -Seconds 3',
-    'if ((Get-Process -Name "DeepSeek Harness" -ErrorAction SilentlyContinue).Count -gt 0) { exit }',
+    'Write-Log "start"',
     'Start-Process -FilePath $exe'
+  ].join('\r\n')
+}
+
+/** 快捷方式指向的入口：静默运行计划任务，由任务以管理员身份还原或启动 DSH。 */
+function openScriptText() {
+  return [
+    'Set sh = CreateObject("WScript.Shell")',
+    `sh.Run "schtasks /run /tn ""${LAUNCH_TASK}""", 0, False`
   ].join('\r\n')
 }
 
@@ -989,6 +1032,7 @@ async function ensureLaunchTask() {
   try {
     await mkdir(STATE_DIR, { recursive: true })
     await writeFile(LAUNCH_SCRIPT, launchScriptText(), 'utf8')
+    await writeFile(OPEN_SCRIPT, openScriptText(), 'utf8')
     action = `New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ${LAUNCH_SCRIPT}'`
   } catch {
     /* 脚本写不进去就退回直接启动 exe */
