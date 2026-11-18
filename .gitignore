@@ -14,3 +14,6 @@ native/Popup/bin/
 
 # 临时脚本（发布按钮用 git add -A，避免误提交）
 _*.cjs
+_*.js
+_*.ps1
+_*.png

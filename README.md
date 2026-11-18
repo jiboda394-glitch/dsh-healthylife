@@ -49,8 +49,10 @@ dsh plugin add github:jiboda394-glitch/dsh-healthylife
 
 ## 开机自启与任务栏图标
 
-- 登录时由计划任务 `HealthLifeLaunch` 以管理员身份运行 `launch-dsh.ps1`：等通知区域就绪 →（本机存在 `F:DSHToolsdsh-fixlaunch-dsh.ps1` 时）顺带清理过期的认证 Cookie → 启动 DSH；随后 `HealthLifeHide` 把窗口隐藏到托盘。
-- 任务栏与开始菜单的快捷方式指向 `open-dsh.vbs`，它静默触发同一个计划任务：DSH 已在跑就把被隐藏的窗口还原到前台，没在跑就启动。所以点图标**不会弹 UAC**，而 DSH 仍然是管理员权限（登录限制照常生效）。
+- 登录时由计划任务 `HealthLife\Launch` 以管理员身份运行 `launch-dsh.ps1`：等通知区域就绪 →（本机存在 `F:\DSH\Tools\dsh-fix\launch-dsh.ps1` 时）顺带清理过期的认证 Cookie → 启动 DSH；随后 `HealthLife\Hide` 把窗口隐藏到托盘。两个任务的动作都是 `wscript.exe`，避免 PowerShell 5.1 的深蓝色控制台窗口闪一下。
+- 任务栏与开始菜单的快捷方式指向 `open-dsh.vbs`，它静默触发同一个计划任务，所以点图标**不会弹 UAC**，而 DSH 仍然是管理员权限（登录限制照常生效）。
+- DSH 已在跑时，启动脚本只还原**主窗口**：按窗口类名 `Chrome_WidgetWin_1` + 标题含 `DeepSeek Harness` + 无 owner + 面积最大来挑，避免误中隐藏的 PowerShell 控制台窗口或 IME 辅助窗口（那些窗口一半是空白的、点不动的框）；还原后再做一次 1px 的尺寸微调，让渲染进程重新布局。
+- 找不到可还原的主窗口时，先看主进程还在不在：在就启动第二个实例，由应用自己把请求转给运行中的实例（`focusPrimaryWindow`）去重建/聚焦窗口；不在就按冷启动处理。
 - 换成别的启动入口（直接双击 exe）时，因为 exe 带 `RUNASADMIN` 兼容性标记，仍会走一次 UAC；要恢复成直接启动，把快捷方式旁边的 `*.lnk.bak` 改回 `.lnk` 即可。
 ## 从源码构建弹窗
 

@@ -475,6 +475,8 @@ const GUARD_SCRIPT = path.join(STATE_DIR, 'guard.ps1')
 const HIDE_SCRIPT = path.join(STATE_DIR, 'hide-window.ps1')
 const LAUNCH_SCRIPT = path.join(STATE_DIR, 'launch-dsh.ps1')
 const OPEN_SCRIPT = path.join(STATE_DIR, 'open-dsh.vbs')
+const LAUNCH_VBS = path.join(STATE_DIR, 'launch.vbs')
+const HIDE_VBS = path.join(STATE_DIR, 'hide-window.vbs')
 
 /** The watchdog body, run by a scheduled task so it survives DSH being killed. */
 function guardScriptText(until) {
@@ -960,10 +962,13 @@ function hideScriptText() {
   ].join('\r\n')
 }
 
-/** 开机 / 点图标启动：已在跑就把被隐藏的窗口还原到前台，否则等通知区域就绪再启动。 */
+/** 开机 / 点图标启动：已在跑就把被隐藏的主窗口还原到前台，否则等通知区域就绪再启动。 */
 function launchScriptText() {
   const q = (value) => String(value).replace(/'/g, "''")
   const staged = 'F:\\DSH\\Tools\\dsh-fix\\launch-dsh.ps1'
+  // 只认真正的主窗口：Chrome_WidgetWin_1 + 标题含应用名 + 无 owner + 面积最大。
+  // 早先按「有标题的第一个窗口」挑，会挑中隐藏的 PowerShell 控制台（深蓝窗口一闪）、
+  // MSCTFIME UI 或 Chrome_WidgetWin_0 这类辅助窗口（出来一个空白、点不动的框）。
   const members = [
     '[DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);',
     'public delegate bool EnumProc(IntPtr h, IntPtr l);',
@@ -971,17 +976,37 @@ function launchScriptText() {
     '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);',
     '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);',
     '[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);',
-    '[DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr h);',
+    '[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);',
+    '[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);',
+    '[DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);',
     '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);',
-    'public static IntPtr FindFor(int[] pids) {',
+    '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);',
+    '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, System.Text.StringBuilder s, int n);',
+    'public struct RECT { public int L; public int T; public int R; public int B; }',
+    'public static IntPtr MainWindow(int[] pids, System.Text.StringBuilder report) {',
     '  var set = new System.Collections.Generic.HashSet<int>(pids);',
-    '  IntPtr res = IntPtr.Zero;',
+    '  IntPtr best = IntPtr.Zero; int bestArea = 0;',
     '  EnumWindows((h, l) => {',
     '    uint pid; GetWindowThreadProcessId(h, out pid);',
-    '    if (set.Contains((int)pid) && GetWindowTextLength(h) > 0) { res = h; return false; }',
+    '    if (!set.Contains((int)pid)) return true;',
+    '    var cn = new System.Text.StringBuilder(128); GetClassName(h, cn, 128);',
+    '    var tx = new System.Text.StringBuilder(512); GetWindowText(h, tx, 512);',
+    '    RECT r; GetWindowRect(h, out r);',
+    '    int area = (r.R - r.L) * (r.B - r.T);',
+    '    bool main = cn.ToString() == "Chrome_WidgetWin_1" && tx.ToString().Contains("DeepSeek Harness") && GetWindow(h, 4) == IntPtr.Zero && area > bestArea;',
+    '    if (main) { bestArea = area; best = h; }',
+    '    report.Append((int)pid).Append("|").Append(cn.ToString()).Append("|").Append(tx.ToString()).Append("|").Append(r.R - r.L).Append("x").Append(r.B - r.T).Append(main ? "|PICK" : "").Append(";");',
     '    return true;',
     '  }, IntPtr.Zero);',
-    '  return res;',
+    '  return best;',
+    '}',
+    'public static void Restore(IntPtr h) {',
+    '  RECT r; GetWindowRect(h, out r);',
+    '  int w = r.R - r.L; int hh = r.B - r.T;',
+    '  ShowWindow(h, 9); ShowWindow(h, 5);',
+    '  SetWindowPos(h, IntPtr.Zero, r.L, r.T, w + 1, hh, 0x0002 | 0x0004);',
+    '  SetWindowPos(h, IntPtr.Zero, r.L, r.T, w, hh, 0x0002 | 0x0004);',
+    '  SetForegroundWindow(h);',
     '}'
   ].join(' ')
   return [
@@ -991,25 +1016,49 @@ function launchScriptText() {
     `$log = '${q(path.join(STATE_DIR, 'launch.log'))}'`,
     `Add-Type -Namespace HL -Name Win -MemberDefinition '${members}'`,
     'function Write-Log([string]$m) { Add-Content -LiteralPath $log -Value ((Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fff") + " " + $m) }',
-    '# 已经在跑：把被隐藏的窗口还原到前台，不再启动第二个实例（也不会弹 UAC）。',
+    '# 已经在跑：把被隐藏的主窗口还原到前台，不再启动第二个实例（也不会弹 UAC）。',
     "\$pids = @(Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue | ForEach-Object { \$_.Id })",
     'if ($pids.Count -gt 0) {',
-    '  $h = [HL.Win]::FindFor([int[]]$pids)',
-    '  Write-Log ("restore pids=" + $pids.Count + " hwnd=" + $h + " visible=" + [string][HL.Win]::IsWindowVisible($h))',
+    '  $report = New-Object System.Text.StringBuilder',
+    '  $h = [HL.Win]::MainWindow([int[]]$pids, $report)',
+    '  Write-Log ("restore pids=" + $pids.Count + " hwnd=" + $h + " visible=" + [string][HL.Win]::IsWindowVisible($h) + " all=" + $report.ToString())',
     '  if ($h -ne [IntPtr]::Zero) {',
-    '    [void][HL.Win]::ShowWindow($h, 5)',
-    '    [void][HL.Win]::ShowWindow($h, 9)',
-    '    [void][HL.Win]::SetForegroundWindow($h)',
+    '    [HL.Win]::Restore($h)',
+    '    Start-Sleep -Milliseconds 150',
+    '    Write-Log ("restored visible=" + [string][HL.Win]::IsWindowVisible($h))',
+    '  } else {',
+    '    # 没有可还原的主窗口时先看主进程还在不在：在就交给应用自己（第二个实例会把请求',
+    '    # 转给正在运行的实例，由它重建/聚焦主窗口），不在就按冷启动处理。',
+    '    $main = @(Get-CimInstance Win32_Process -Filter "Name=\'DeepSeek Harness.exe\'" | Where-Object { $_.CommandLine -notmatch "--type=" }).Count',
+    '    if ($main -gt 0) {',
+    '      Write-Log "fallback second-instance main=$main"',
+    '      Start-Process -FilePath $exe',
+    '    } elseif (Test-Path -LiteralPath $staged) {',
+    '      Write-Log "fallback cold start main=$main"',
+    '      & $staged -Fast',
+    '    } else {',
+    '      Write-Log "fallback cold start (no staged) main=$main"',
+    '      Start-Process -FilePath $exe',
+    '    }',
     '  }',
     '  exit',
     '}',
     '# 本机有「清理过期认证 Cookie」的启动脚本时交给它，它自己也会等通知区域。',
-    'if (Test-Path -LiteralPath $staged) { Write-Log "delegate staged"; & $staged; exit }',
+    'if (Test-Path -LiteralPath $staged) { Write-Log "delegate staged"; & $staged -Fast; exit }',
     '$deadline = (Get-Date).AddSeconds(90)',
     "while ((Get-Date) -lt $deadline -and [HL.Win]::FindWindow('Shell_TrayWnd', $null) -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 200 }",
-    'Start-Sleep -Seconds 3',
     'Write-Log "start"',
     'Start-Process -FilePath $exe'
+  ].join('\r\n')
+}
+
+/** 计划任务的动作：用 wscript 静默拉起 PowerShell，避免 PS 5.1 的深蓝色控制台窗口一闪而过。 */
+function vbsRunnerText(scriptName) {
+  return [
+    'Set fso = CreateObject("Scripting.FileSystemObject")',
+    'base = fso.GetParentFolderName(WScript.ScriptFullName)',
+    'Set sh = CreateObject("WScript.Shell")',
+    `sh.Run "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File """ & base & "\\${scriptName}""", 0, False`
   ].join('\r\n')
 }
 
@@ -1033,21 +1082,27 @@ async function ensureLaunchTask() {
     await mkdir(STATE_DIR, { recursive: true })
     await writeFile(LAUNCH_SCRIPT, launchScriptText(), 'utf8')
     await writeFile(OPEN_SCRIPT, openScriptText(), 'utf8')
-    action = `New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ${LAUNCH_SCRIPT}'`
+    await writeFile(LAUNCH_VBS, vbsRunnerText('launch-dsh.ps1'), 'utf8')
+    // 动作走 wscript：PS 5.1 的深蓝色控制台窗口不会闪出来，脚本在后台隐藏执行。
+    action = `New-ScheduledTaskAction -Execute 'wscript.exe' -Argument '"${LAUNCH_VBS}"'`
   } catch {
     /* 脚本写不进去就退回直接启动 exe */
   }
-  const script = `Register-ScheduledTask -TaskName '${LAUNCH_TASK}' -Action (${action}) -Trigger ${trigger} -RunLevel Highest -Force | Out-Null`
+  const settings =
+    '(New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew)'
+  const script = `Register-ScheduledTask -TaskName '${LAUNCH_TASK}' -Action (${action}) -Trigger ${trigger} -Settings ${settings} -RunLevel Highest -Force | Out-Null`
   const launch = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], 30000)
 
   if (state.config.autoStart) {
     try {
       await mkdir(STATE_DIR, { recursive: true })
       await writeFile(HIDE_SCRIPT, hideScriptText(), 'utf8')
+      await writeFile(HIDE_VBS, vbsRunnerText('hide-window.ps1'), 'utf8')
     } catch {
       /* the hide task is best effort */
     }
-    const hide = `Register-ScheduledTask -TaskName '${HIDE_TASK}' -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ${HIDE_SCRIPT}') -Trigger (New-ScheduledTaskTrigger -AtLogOn -User '${user}') -RunLevel Highest -Force | Out-Null`
+    const hideAction = `New-ScheduledTaskAction -Execute 'wscript.exe' -Argument '"${HIDE_VBS}"'`
+    const hide = `Register-ScheduledTask -TaskName '${HIDE_TASK}' -Action (${hideAction}) -Trigger (New-ScheduledTaskTrigger -AtLogOn -User '${user}') -Settings ${settings} -RunLevel Highest -Force | Out-Null`
     await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', hide], 30000)
   } else {
     await run('schtasks.exe', ['/delete', '/tn', HIDE_TASK, '/f'], 10000)
