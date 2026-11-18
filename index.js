@@ -477,6 +477,8 @@ const LAUNCH_SCRIPT = path.join(STATE_DIR, 'launch-dsh.ps1')
 const OPEN_SCRIPT = path.join(STATE_DIR, 'open-dsh.vbs')
 const LAUNCH_VBS = path.join(STATE_DIR, 'launch.vbs')
 const HIDE_VBS = path.join(STATE_DIR, 'hide-window.vbs')
+/** 由隐藏任务写下的标记：有这个标记说明窗口是「任务藏起来的」，外部还原是安全的。 */
+const HIDE_MARKER = path.join(STATE_DIR, 'hidden-by-task.txt')
 
 /** The watchdog body, run by a scheduled task so it survives DSH being killed. */
 function guardScriptText(until) {
@@ -941,9 +943,11 @@ async function restoreLogon() {
 
 /** Runs at logon next to the launcher: hides the window as soon as it appears. */
 function hideScriptText() {
+  const q = (value) => String(value).replace(/'/g, "''")
   return [
     "$ErrorActionPreference = 'SilentlyContinue'",
     `Add-Type -Namespace HL -Name Win -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);'`,
+    `$marker = '${q(HIDE_MARKER)}'`,
     '$deadline = (Get-Date).AddSeconds(90)',
     '$firstHide = $null',
     'while ((Get-Date) -lt $deadline) {',
@@ -953,6 +957,9 @@ function hideScriptText() {
     '    $h = $p.MainWindowHandle',
     '    if ($h -ne [IntPtr]::Zero -and [HL.Win]::IsWindowVisible($h)) {',
     '      [HL.Win]::ShowWindow($h, 0) | Out-Null',
+    '      # 记下「这次是任务藏起来的」：此时 Chromium 仍认为窗口可见，',
+    '      # 之后从外部 ShowWindow 还原是安全的；用户自己关窗口则没有这个标记。',
+    '      Set-Content -LiteralPath $marker -Value ((Get-Date).ToString("o")) -ErrorAction SilentlyContinue',
     '      if (-not $firstHide) { $firstHide = Get-Date }',
     '    }',
     '  }',
@@ -975,9 +982,12 @@ function launchScriptText() {
     '[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);',
     '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);',
     '[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);',
+    '[DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr h, bool alt);',
     '[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);',
     '[DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);',
     '[DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);',
+    '[DllImport("user32.dll")] public static extern bool InvalidateRect(IntPtr h, IntPtr r, bool erase);',
+    '[DllImport("user32.dll")] public static extern bool UpdateWindow(IntPtr h);',
     '[DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint cmd);',
     '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);',
     '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);',
@@ -1006,30 +1016,54 @@ function launchScriptText() {
     '  ShowWindow(h, 9); ShowWindow(h, 5);',
     '  SetWindowPos(h, IntPtr.Zero, r.L, r.T, w + 1, hh, 0x0002 | 0x0004);',
     '  SetWindowPos(h, IntPtr.Zero, r.L, r.T, w, hh, 0x0002 | 0x0004);',
+    '  InvalidateRect(h, IntPtr.Zero, true); UpdateWindow(h);',
     '  SetForegroundWindow(h);',
-    '}'
+    '}',
+    'public static void Raise(IntPtr h) { if (h == IntPtr.Zero) return; SetForegroundWindow(h); SwitchToThisWindow(h, true); }'
   ].join(' ')
   return [
     "$ErrorActionPreference = 'SilentlyContinue'",
     `$exe = '${q(process.execPath)}'`,
     `$staged = '${q(staged)}'`,
     `$log = '${q(path.join(STATE_DIR, 'launch.log'))}'`,
+    `$marker = '${q(HIDE_MARKER)}'`,
     `Add-Type -Namespace HL -Name Win -MemberDefinition '${members}'`,
     'function Write-Log([string]$m) { Add-Content -LiteralPath $log -Value ((Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fff") + " " + $m) }',
-    '# 已经在跑：把被隐藏的主窗口还原到前台，不再启动第二个实例（也不会弹 UAC）。',
+    '# 已经在跑：还原被隐藏的主窗口。注意「关窗口」是应用自己 win.hide()，光从外部 ShowWindow',
+    '# 只能把窗口显示出来，渲染进程还处在隐藏节流里，画面会是冻住的，所以要同时让应用自己 show。',
     "\$pids = @(Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue | ForEach-Object { \$_.Id })",
     'if ($pids.Count -gt 0) {',
     '  $report = New-Object System.Text.StringBuilder',
     '  $h = [HL.Win]::MainWindow([int[]]$pids, $report)',
-    '  Write-Log ("restore pids=" + $pids.Count + " hwnd=" + $h + " visible=" + [string][HL.Win]::IsWindowVisible($h) + " all=" + $report.ToString())',
+    '  $vis = [HL.Win]::IsWindowVisible($h)',
+    '  Write-Log ("restore pids=" + $pids.Count + " hwnd=" + $h + " visible=" + $vis + " all=" + $report.ToString())',
     '  if ($h -ne [IntPtr]::Zero) {',
-    '    [HL.Win]::Restore($h)',
-    '    Start-Sleep -Milliseconds 150',
-    '    Write-Log ("restored visible=" + [string][HL.Win]::IsWindowVisible($h))',
+    '    if ($vis) {',
+    '      Write-Log "already visible: raise"',
+    '      Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue',
+    '      [HL.Win]::Raise($h)',
+    '    } elseif (Test-Path -LiteralPath $marker) {',
+    '      # 这个窗口是开机时由隐藏任务用 ShowWindow(0) 藏起来的，Chromium 仍认为它可见，',
+    '      # 此时从外部还原是安全的（不会出现冻住的画面）。',
+    '      Write-Log "restore (hidden by task)"',
+    '      [HL.Win]::Restore($h)',
+    '      Remove-Item -LiteralPath $marker -ErrorAction SilentlyContinue',
+    '    } else {',
+    '      # 否则是用户关窗口：应用自己 win.hide()，Chromium 把页面判定为隐藏并节流，',
+    '      # 只从外部 ShowWindow 会显示出一个画面和输入都冻住的窗口。先让应用自己 show。',
+    '      Write-Log "route second-instance (hidden by app)"',
+    '      Start-Process -FilePath $exe',
+    '      $until = (Get-Date).AddMilliseconds(3000)',
+    '      while ((Get-Date) -lt $until -and -not [HL.Win]::IsWindowVisible($h)) { Start-Sleep -Milliseconds 100 }',
+    '      $now = [HL.Win]::IsWindowVisible($h)',
+    '      Write-Log ("second-instance visible=" + $now)',
+    '      if (-not $now) { [HL.Win]::Restore($h) }',
+    '    }',
+    '    [HL.Win]::Raise($h)',
     '  } else {',
-    '    # 没有可还原的主窗口时先看主进程还在不在：在就交给应用自己（第二个实例会把请求',
-    '    # 转给正在运行的实例，由它重建/聚焦主窗口），不在就按冷启动处理。',
-    '    $main = @(Get-CimInstance Win32_Process -Filter "Name=\'DeepSeek Harness.exe\'" | Where-Object { $_.CommandLine -notmatch "--type=" }).Count',
+    '    # 没有主窗口时先看应用主进程还在不在：排除 --type= 子进程和 .js 辅助进程，',
+    '    # 剩下的才是宿主本体。在就让第二个实例把请求转过去，不在就按冷启动处理。',
+    '    $main = @(Get-CimInstance Win32_Process -Filter "Name=\'DeepSeek Harness.exe\'" | Where-Object { $_.CommandLine -notmatch "--type=" -and $_.CommandLine -notmatch "\.js" }).Count',
     '    if ($main -gt 0) {',
     '      Write-Log "fallback second-instance main=$main"',
     '      Start-Process -FilePath $exe',
