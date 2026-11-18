@@ -473,6 +473,7 @@ const LAUNCH_TASK = 'HealthLife\\Launch'
 const HIDE_TASK = 'HealthLife\\Hide'
 const GUARD_SCRIPT = path.join(STATE_DIR, 'guard.ps1')
 const HIDE_SCRIPT = path.join(STATE_DIR, 'hide-window.ps1')
+const LAUNCH_SCRIPT = path.join(STATE_DIR, 'launch-dsh.ps1')
 
 /** The watchdog body, run by a scheduled task so it survives DSH being killed. */
 function guardScriptText(until) {
@@ -941,6 +942,7 @@ function hideScriptText() {
     "$ErrorActionPreference = 'SilentlyContinue'",
     `Add-Type -Namespace HL -Name Win -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow); [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);'`,
     '$deadline = (Get-Date).AddSeconds(90)',
+    '$firstHide = $null',
     'while ((Get-Date) -lt $deadline) {',
     '  $p = Get-Process -Name "DeepSeek Harness" -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending | Select-Object -First 1',
     '  if ($p) {',
@@ -948,13 +950,31 @@ function hideScriptText() {
     '    $h = $p.MainWindowHandle',
     '    if ($h -ne [IntPtr]::Zero -and [HL.Win]::IsWindowVisible($h)) {',
     '      [HL.Win]::ShowWindow($h, 0) | Out-Null',
-    '      Start-Sleep -Seconds 3',
-    '      [HL.Win]::ShowWindow($h, 0) | Out-Null',
-    '      break',
+    '      if (-not $firstHide) { $firstHide = Get-Date }',
     '    }',
     '  }',
-    '  Start-Sleep -Milliseconds 20',
+    '  if ($firstHide -and ((Get-Date) - $firstHide).TotalSeconds -gt 20) { break }',
+    '  Start-Sleep -Milliseconds 100',
     '}'
+  ].join('\r\n')
+}
+
+/** 开机启动脚本：等通知区域就绪再拉起 DSH，避免托盘/窗口状态异常。 */
+function launchScriptText() {
+  const q = (value) => String(value).replace(/'/g, "''")
+  const staged = 'F:\\DSH\\Tools\\dsh-fix\\launch-dsh.ps1'
+  return [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    `$exe = '${q(process.execPath)}'`,
+    `$staged = '${q(staged)}'`,
+    '# 本机有「清理过期认证 Cookie」的启动脚本时交给它，它自己也会等通知区域。',
+    'if (Test-Path -LiteralPath $staged) { & $staged; exit }',
+    `Add-Type -Namespace HL -Name Win -MemberDefinition '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);'`,
+    '$deadline = (Get-Date).AddSeconds(90)',
+    "while ((Get-Date) -lt $deadline -and [HL.Win]::FindWindow('Shell_TrayWnd', $null) -eq [IntPtr]::Zero) { Start-Sleep -Milliseconds 200 }",
+    'Start-Sleep -Seconds 3',
+    'if ((Get-Process -Name "DeepSeek Harness" -ErrorAction SilentlyContinue).Count -gt 0) { exit }',
+    'Start-Process -FilePath $exe'
   ].join('\r\n')
 }
 
@@ -964,7 +984,16 @@ async function ensureLaunchTask() {
   const trigger = state.config.autoStart
     ? `(New-ScheduledTaskTrigger -AtLogOn -User '${user}')`
     : '(New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(10))'
-  const script = `Register-ScheduledTask -TaskName '${LAUNCH_TASK}' -Action (New-ScheduledTaskAction -Execute '${process.execPath}') -Trigger ${trigger} -RunLevel Highest -Force | Out-Null`
+  // 启动交给引导脚本：先等通知区域就绪、必要时先清理认证 Cookie，再拉起应用。
+  let action = `New-ScheduledTaskAction -Execute '${process.execPath}'`
+  try {
+    await mkdir(STATE_DIR, { recursive: true })
+    await writeFile(LAUNCH_SCRIPT, launchScriptText(), 'utf8')
+    action = `New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ${LAUNCH_SCRIPT}'`
+  } catch {
+    /* 脚本写不进去就退回直接启动 exe */
+  }
+  const script = `Register-ScheduledTask -TaskName '${LAUNCH_TASK}' -Action (${action}) -Trigger ${trigger} -RunLevel Highest -Force | Out-Null`
   const launch = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], 30000)
 
   if (state.config.autoStart) {
