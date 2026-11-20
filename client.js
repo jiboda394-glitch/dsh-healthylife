@@ -183,7 +183,11 @@ window.__ModuleLoader__.load({
       }, options.map((option) => h('option', { key: option.value, value: option.value }, option.label)))
     }
 
-    const hourOptions = Array.from({ length: 24 }, (_, hour) => ({ value: `${String(hour).padStart(2, '0')}:00`, label: `${String(hour).padStart(2, '0')}:00` }))
+    // 时间窗按半小时一档：00:00、00:30 … 23:30（登录时段那条另按整点取整）
+    const hourOptions = Array.from({ length: 48 }, (_, index) => {
+      const value = `${String(Math.floor(index / 2)).padStart(2, '0')}:${index % 2 ? '30' : '00'}`
+      return { value, label: value }
+    })
     const numberOptions = (max) => Array.from({ length: max + 1 }, (_, n) => ({ value: String(n), label: `${n} 次` }))
 
     function Row({ title, desc, children }) {
@@ -328,7 +332,11 @@ window.__ModuleLoader__.load({
             h(Switch, { checked: Boolean(config && config.curfewEnabled), disabled: !config || busy !== '' || locked, label: '宵禁模式', onChange: (value) => void patch({ curfewEnabled: value }, 'curfew') }))),
 
         h(Card, { title: '生效日与时间' },
-          h('p', { className: 'hl-hint' }, '每天可单独开关并设置时间窗。跨零点的窗口严格按原区间执行：例如周一 23:00–06:00 会一直挡到周二 06:00，周二白天的设置不影响它。'),
+          h('p', { className: 'hl-hint' }, '每天可单独开关并设置时间窗，时间按半小时一档。跨零点的窗口严格按原区间执行：例如周一 23:30–06:00 会一直挡到周二 06:00，周二白天的设置不影响它。'),
+          data && data.config && data.config.loginBlock && data.loginBlocked
+            ? h('p', { className: 'hl-hint' },
+              `登录限制由 Windows 登录时段执行，只能按整点：当前窗口实际限制 ${data.loginBlocked.from}–${data.loginBlocked.spill ? '次日 ' : ''}${data.loginBlocked.to}（已向外取整，比宵禁多挡一段）`)
+            : null,
           data && data.configLock
             ? h('p', { className: 'hl-hint', style: { fontWeight: 600 } },
               `已冻结：距宵禁不足 ${data.configLock.minutes} 分钟，${clockText(data.configLock.until)} 前不可修改窗口、开关与取消配额`)

@@ -254,6 +254,26 @@ function logonHoursSpec(config) {
   return groups.join(';')
 }
 
+/**
+ * Windows 登录时段只能按整点，所以半个小时的窗口会被「向外取整」成本整点：
+ * 01:30–05:30 → 01:00–06:00。这里只负责把实际生效的整点区间算出来给界面展示。
+ */
+function roundedLogonWindow(start, end) {
+  const from = new Date(start)
+  const to = new Date(end)
+  const startDay = new Date(start)
+  startDay.setHours(0, 0, 0, 0)
+  const endDay = new Date(end)
+  endDay.setHours(0, 0, 0, 0)
+  let spill = Math.round((endDay.getTime() - startDay.getTime()) / DAY) > 0
+  let toHour = to.getHours() + (to.getMinutes() > 0 ? 1 : 0)
+  if (toHour >= 24) {
+    toHour -= 24
+    spill = true
+  }
+  return { from: hourLabel(from.getHours()), to: hourLabel(toHour), spill }
+}
+
 function defaultState() {
   return {
     config: { ...DEFAULT_CONFIG, days: defaultDays() },
@@ -295,10 +315,12 @@ const detection = { key: '', result: null }
 
 function sanitizeDays(input) {
   const source = Array.isArray(input) ? input : []
+  // 时间窗按半小时一档：接口传进来的零散分钟数吸附到最近的 30 分钟。
+  const snap = (minute) => (((Math.round(minute / 30) * 30) % 1440) + 1440) % 1440
   return Array.from({ length: 7 }, (_, index) => {
     const entry = source[index] || {}
-    const start = formatMinute(parseHHMM(entry.start, 60))
-    let end = formatMinute(parseHHMM(entry.end, 300))
+    const start = formatMinute(snap(parseHHMM(entry.start, 60)))
+    let end = formatMinute(snap(parseHHMM(entry.end, 300)))
     if (start === end) end = formatMinute((parseHHMM(start, 60) + 240) % 1440)
     return { enabled: entry.enabled !== false, start, end }
   })
@@ -1386,6 +1408,7 @@ function publicState(now = Date.now()) {
     },
     window: shown ? { start: shown.start, end: shown.end, dayIdx: shown.dayIdx } : null,
     active: Boolean(current),
+    loginBlocked: shown ? roundedLogonWindow(shown.start, shown.end) : null,
     configLock: configLock(now),
     deadline: night.deadline,
     extended: night.extended,
