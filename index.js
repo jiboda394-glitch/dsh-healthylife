@@ -315,8 +315,8 @@ const detection = { key: '', result: null }
 
 function sanitizeDays(input) {
   const source = Array.isArray(input) ? input : []
-  // 时间窗按半小时一档：接口传进来的零散分钟数吸附到最近的 30 分钟。
-  const snap = (minute) => (((Math.round(minute / 30) * 30) % 1440) + 1440) % 1440
+  // 时间窗精确到分钟（和手机闹钟一样）；这里只做越界归一，界面负责交互。
+  const snap = (minute) => ((minute % 1440) + 1440) % 1440
   return Array.from({ length: 7 }, (_, index) => {
     const entry = source[index] || {}
     const start = formatMinute(snap(parseHHMM(entry.start, 60)))

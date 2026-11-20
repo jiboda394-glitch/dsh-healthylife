@@ -121,6 +121,9 @@ window.__ModuleLoader__.load({
 .hl-switch.is-on .hl-switch-knob { transform: translateX(18px); }
 .hl-select, .hl-input { height: 30px; min-width: 78px; border-radius: 8px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); padding: 0 8px; font-size: 12.5px; outline: none; }
 .hl-select:focus, .hl-input:focus { border-color: var(--dsw-alias-brand-primary); }
+.hl-time { width: 96px; padding: 0 6px; font-variant-numeric: tabular-nums; text-align: center; }
+.hl-time::-webkit-calendar-picker-indicator { opacity: .55; cursor: pointer; }
+.hl-time::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 .hl-btn { height: 32px; padding: 0 14px; border-radius: 9px; border: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font-size: 12.5px; cursor: pointer; transition: border-color .15s ease, opacity .15s ease; }
 .hl-btn:hover { border-color: var(--dsw-alias-brand-primary); }
 .hl-btn:disabled { opacity: .45; cursor: not-allowed; }
@@ -183,11 +186,22 @@ window.__ModuleLoader__.load({
       }, options.map((option) => h('option', { key: option.value, value: option.value }, option.label)))
     }
 
-    // 时间窗按半小时一档：00:00、00:30 … 23:30（登录时段那条另按整点取整）
-    const hourOptions = Array.from({ length: 48 }, (_, index) => {
-      const value = `${String(Math.floor(index / 2)).padStart(2, '0')}:${index % 2 ? '30' : '00'}`
-      return { value, label: value }
-    })
+    // 时间像手机闹钟一样直接选到分钟：小时、分钟分开拨，键盘也能输入。
+    function TimeField({ value, onChange, ariaLabel, disabled }) {
+      return h('input', {
+        type: 'time',
+        className: 'hl-input hl-time',
+        value,
+        step: 60,
+        'aria-label': ariaLabel,
+        disabled,
+        onChange: (event) => {
+          const next = event.target.value
+          if (next) onChange(next)
+        }
+      })
+    }
+
     const numberOptions = (max) => Array.from({ length: max + 1 }, (_, n) => ({ value: String(n), label: `${n} 次` }))
 
     function Row({ title, desc, children }) {
@@ -332,7 +346,7 @@ window.__ModuleLoader__.load({
             h(Switch, { checked: Boolean(config && config.curfewEnabled), disabled: !config || busy !== '' || locked, label: '宵禁模式', onChange: (value) => void patch({ curfewEnabled: value }, 'curfew') }))),
 
         h(Card, { title: '生效日与时间' },
-          h('p', { className: 'hl-hint' }, '每天可单独开关并设置时间窗，时间按半小时一档。跨零点的窗口严格按原区间执行：例如周一 23:30–06:00 会一直挡到周二 06:00，周二白天的设置不影响它。'),
+          h('p', { className: 'hl-hint' }, '每天可单独开关并设置时间窗，时间可以精确到分钟（像手机闹钟一样直接拨或输入）。跨零点的窗口严格按原区间执行：例如周一 23:40–06:00 会一直挡到周二 06:00，周二白天的设置不影响它。'),
           data && data.config && data.config.loginBlock && data.loginBlocked
             ? h('p', { className: 'hl-hint' },
               `登录限制由 Windows 登录时段执行，只能按整点：当前窗口实际限制 ${data.loginBlocked.from}–${data.loginBlocked.spill ? '次日 ' : ''}${data.loginBlocked.to}（已向外取整，比宵禁多挡一段）`)
@@ -349,9 +363,9 @@ window.__ModuleLoader__.load({
               label: '启用',
               onChange: (value) => void patchDays(index, { enabled: value })
             }),
-            h(Select, { value: entry.start, options: hourOptions, ariaLabel: '开始', disabled: locked, onChange: (value) => void patchDays(index, { start: value }) }),
+            h(TimeField, { value: entry.start, ariaLabel: '开始', disabled: locked, onChange: (value) => void patchDays(index, { start: value }) }),
             h('span', { className: 'hl-day-sep' }, '–'),
-            h(Select, { value: entry.end, options: hourOptions, ariaLabel: '结束', disabled: locked, onChange: (value) => void patchDays(index, { end: value }) })))),
+            h(TimeField, { value: entry.end, ariaLabel: '结束', disabled: locked, onChange: (value) => void patchDays(index, { end: value }) })))),
 
         h(Card, { title: '提醒与倒计时' },
           h(Row, { title: '提前提醒', desc: '在宵禁开始前弹出桌面提醒，留出保存时间' },
