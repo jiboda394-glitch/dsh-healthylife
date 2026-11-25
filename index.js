@@ -679,16 +679,154 @@ async function refreshExitLog() {
   }
 }
 
-function buildReport(now) {
-  const days = []
-  const totals = { shutdown: 0, cancel: 0, exempt: 0, none: 0 }
-  for (let index = 6; index >= 0; index -= 1) {
-    const key = dayKey(now - index * DAY)
-    const outcome = state.nights[key] || 'none'
-    totals[outcome] = (totals[outcome] || 0) + 1
-    days.push({ day: key, outcome })
+/*
+ * 月报：每晚的结局分五种颜色 —— 主动早睡 / 宵禁关机 / 取消 / 豁免 / 未触发。
+ *
+ * 「宵禁前自己关机」只能事后从系统事件日志重建：手动关机会把 DSH 一起带走，
+ * 那一瞬间根本来不及写盘。事件 1074 = 有进程发起了关机，能读出「谁发起的 /
+ * 关机还是重启 / 备注」；我们自己发起的关机带固定备注，用它把红点排除掉。
+ */
+const SHUTDOWN_LOOKBACK_MS = 8 * 60 * MINUTE
+const SHUTDOWN_REFRESH_MS = 5 * MINUTE
+const SHUTDOWN_INDEX_DAYS = 120
+const MONTH_RE = /^(\d{4})-(\d{2})$/
+const OWN_SHUTDOWN_MARK = '健康生活宵禁'
+/** 系统更新之类发起的关机不算「主动早睡」。 */
+const SYSTEM_SHUTTERS = ['tiworker', 'mousocoreworker', 'trustedinstaller', 'usoclient', 'setuphost', 'musnotifyicon']
+const shutdownIndex = { loadedAt: 0, events: [] }
+let shutdownIndexFailed = false
+
+async function refreshShutdownIndex(now = Date.now()) {
+  if (now - shutdownIndex.loadedAt < SHUTDOWN_REFRESH_MS) return
+  shutdownIndex.loadedAt = now
+  try {
+    const from = new Date(now - SHUTDOWN_INDEX_DAYS * DAY)
+    const stamp = `${from.getFullYear()}-${pad(from.getMonth() + 1)}-${pad(from.getDate())}T00:00:00`
+    const script = [
+      "$ErrorActionPreference='SilentlyContinue'",
+      `$start=[datetime]::ParseExact('${stamp}','yyyy-MM-ddTHH:mm:ss',$null)`,
+      "Get-WinEvent -FilterHashtable @{LogName='System';Id=1074;StartTime=$start} -MaxEvents 800 | ForEach-Object { $p=$_.Properties; '{0}|{1}|{2}|{3}' -f $_.TimeCreated.ToString('o'),$p[0].Value,$p[4].Value,$p[5].Value }"
+    ].join('; ')
+    const result = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], 25000)
+    if (!result.ok) {
+      // 只报一次，避免每 5 分钟往「最近记录」里刷同样的错误
+      if (!shutdownIndexFailed) {
+        shutdownIndexFailed = true
+        remember('report', `读取关机事件失败，月报只能显示未触发：${(result.stderr || `exit ${result.code}`).slice(0, 120)}`)
+      }
+      return
+    }
+    shutdownIndexFailed = false
+    const events = []
+    for (const line of result.stdout.split(/\r?\n/)) {
+      const text = line.trim()
+      if (!text) continue
+      const parts = text.split('|')
+      if (parts.length < 3) continue
+      const at = Date.parse(parts[0])
+      if (!Number.isFinite(at)) continue
+      events.push({ at, process: parts[1] || '', action: parts[2] || '', note: parts.slice(3).join('|') })
+    }
+    shutdownIndex.events = events
+  } catch {
+    /* 读不到事件日志时月报退化成「未触发」，绝不影响调度 */
   }
-  return { days, totals, restarts: state.recentExits.filter((line) => line.includes('exit-restart')).length }
+}
+
+function isManualShutdown(entry) {
+  if (!/关|shut|off/i.test(entry.action)) return false
+  const note = String(entry.note || '')
+  if (note.includes(OWN_SHUTDOWN_MARK) || note.includes('健康生活')) return false
+  const name = String(entry.process || '').split(/[\\/]/).pop().replace(/\.exe$/i, '').toLowerCase()
+  return !SYSTEM_SHUTTERS.includes(name)
+}
+
+/** 宵禁开始前 8 小时内的最后一次「自己关机」；返回时间戳，没有则 0。 */
+function manualShutdownBefore(start) {
+  const floor = start - SHUTDOWN_LOOKBACK_MS
+  let hit = 0
+  for (const entry of shutdownIndex.events) {
+    if (entry.at >= floor && entry.at < start && isManualShutdown(entry)) hit = Math.max(hit, entry.at)
+  }
+  return hit
+}
+
+function monthKeyOf(ts) {
+  const d = new Date(ts)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`
+}
+
+function monthRange(key) {
+  const match = MONTH_RE.exec(String(key || ''))
+  if (!match) return null
+  const year = Number(match[1])
+  const month = Number(match[2]) - 1
+  if (month < 0 || month > 11 || year < 2000 || year > 2100) return null
+  return {
+    year,
+    month,
+    from: new Date(year, month, 1, 0, 0, 0, 0).getTime(),
+    to: new Date(year, month + 1, 1, 0, 0, 0, 0).getTime()
+  }
+}
+
+function shiftMonth(key, delta) {
+  const range = monthRange(key)
+  if (!range) return key
+  const d = new Date(range.year, range.month + delta, 1)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`
+}
+
+/** 某一天的宵禁从几点开始；那天没排宵禁则返回 0。 */
+function nightStartOf(dayText) {
+  const d = new Date(`${dayText}T00:00:00`)
+  if (Number.isNaN(d.getTime())) return 0
+  const entry = state.config.days[d.getDay()]
+  if (!entry || !entry.enabled) return 0
+  const startMinute = parseHHMM(entry.start, 60)
+  if (startMinute === parseHHMM(entry.end, 300)) return 0
+  return d.getTime() + startMinute * MINUTE
+}
+
+function earliestReportMonth(now) {
+  const keys = Object.keys(state.nights || {}).sort()
+  let earliest = keys.length ? Date.parse(`${keys[0]}T00:00:00`) : now - 30 * DAY
+  for (const entry of shutdownIndex.events) earliest = Math.min(earliest, entry.at)
+  if (!Number.isFinite(earliest)) earliest = now - 30 * DAY
+  const floor = shiftMonth(monthKeyOf(now), -23)
+  return monthKeyOf(earliest) < floor ? floor : monthKeyOf(earliest)
+}
+
+function buildMonthReport(key, now = Date.now()) {
+  const range = monthRange(key)
+  if (!range) return null
+  const currentMonth = monthKeyOf(now)
+  const days = []
+  const totals = { healthy: 0, shutdown: 0, cancel: 0, exempt: 0, none: 0 }
+  for (let ts = range.from; ts < range.to; ts += DAY) {
+    const day = dayKey(ts)
+    const future = ts > now
+    let outcome = state.nights[day] || ''
+    if (!outcome) {
+      const start = future ? 0 : nightStartOf(day)
+      outcome = start && manualShutdownBefore(start) ? 'healthy' : 'none'
+    }
+    totals[outcome] = (totals[outcome] || 0) + 1
+    days.push({ day, date: Number(day.slice(8)), weekday: new Date(ts).getDay(), outcome, future })
+  }
+  return {
+    month: key,
+    label: `${range.year} 年 ${range.month + 1} 月`,
+    firstWeekday: new Date(range.from).getDay(),
+    days,
+    totals,
+    restarts: key === currentMonth ? state.recentExits.filter((line) => line.includes('exit-restart')).length : 0,
+    prev: shiftMonth(key, -1),
+    next: shiftMonth(key, 1),
+    hasPrev: key > earliestReportMonth(now),
+    hasNext: key < currentMonth,
+    current: key === currentMonth
+  }
 }
 
 async function issueShutdown(seconds) {
@@ -1217,10 +1355,10 @@ function resetNightIfNeeded(key, start, countdownMs) {
   pruneNights()
 }
 
-/** state.nights 按天累积，只保留最近 60 晚，避免无限增长。 */
+/** state.nights 按天累积，保留最近 400 晚（够翻一年月报），避免无限增长。 */
 function pruneNights() {
   const keys = Object.keys(state.nights || {}).sort()
-  while (keys.length > 60) delete state.nights[keys.shift()]
+  while (keys.length > 400) delete state.nights[keys.shift()]
 }
 
 async function tickInner() {
@@ -1228,6 +1366,7 @@ async function tickInner() {
   const now = Date.now()
   rollQuota(now)
   await rotateGuardLog(now)
+  await refreshShutdownIndex(now)
 
   if (preview.phase && now < preview.until) {
     setPhase(preview.phase, '预览')
@@ -1420,7 +1559,7 @@ function publicState(now = Date.now()) {
       active: now >= shown.start - GUARD_MINUTES * MINUTE && now < shown.start + Math.max(5, Number(state.config.countdownSeconds) || 30) * 1000 + UNSAVED_EXTENSION_SECONDS * 1000 + 60000,
       spawned: guardedNight === dayKey(shown.start)
     } : null,
-    report: buildReport(now),
+    report: buildMonthReport(monthKeyOf(now), now),
     recentExits: state.recentExits.slice(-5),
     exemptTonight: state.exemptTonight,
     previewFrom: preview.from,
@@ -1505,6 +1644,17 @@ function makeHandler() {
     try {
       if (route === '/state' || route === '/state/') {
         sendJson(res, 200, publicState())
+        return
+      }
+      if (route === '/report' || route === '/report/') {
+        const month = url.searchParams.get('month') || monthKeyOf(Date.now())
+        await refreshShutdownIndex(Date.now())
+        const report = buildMonthReport(month)
+        if (!report) {
+          sendJson(res, 400, { ok: false, error: 'month 需要是 YYYY-MM' })
+          return
+        }
+        sendJson(res, 200, { ok: true, report })
         return
       }
       if (req.method !== 'POST') {

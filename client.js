@@ -154,10 +154,21 @@ window.__ModuleLoader__.load({
 .hl-hint { font-size: 12px; color: var(--dsw-alias-label-secondary); padding: 4px 0 12px; }
 .hl-actions { display: flex; gap: 10px; padding: 12px 0 14px; flex-wrap: wrap; }
 
-.hl-report { display: flex; gap: 10px; padding: 12px 0 6px; }
-.hl-report-day { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; }
-.hl-report-dot { display: block; width: 20px; height: 20px; border-radius: 7px; }
-.hl-report-date { font-size: 11px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
+.hl-month-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 2px 0 12px; }
+.hl-month-title { font-size: 13px; font-weight: 600; }
+.hl-month-sub { font-size: 11px; color: var(--dsw-alias-label-secondary); margin-left: 8px; font-weight: 400; }
+.hl-month-nav { display: flex; gap: 6px; }
+.hl-month-nav .hl-btn { padding: 2px 10px; font-size: 12px; line-height: 20px; }
+.hl-cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px 4px; }
+.hl-cal-wd { text-align: center; font-size: 11px; color: var(--dsw-alias-label-secondary); padding-bottom: 4px; }
+.hl-cal-cell { display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 5px 0 6px; border-radius: 8px; }
+.hl-cal-cell.is-blank { visibility: hidden; }
+.hl-cal-cell.is-future { opacity: 0.3; }
+.hl-cal-day { font-size: 11px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
+.hl-cal-dot { display: block; width: 16px; height: 16px; border-radius: 5px; }
+.hl-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 14px 0 2px; }
+.hl-legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dsw-alias-label-secondary); }
+.hl-legend-dot { width: 10px; height: 10px; border-radius: 3px; }
 .hl-day { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px dashed var(--dsw-alias-border-l1); }
 .hl-day:last-child { border-bottom: none; }
 .hl-day-name { width: 44px; flex-shrink: 0; font-size: 13px; font-weight: 500; }
@@ -243,12 +254,16 @@ window.__ModuleLoader__.load({
       return { title: PHASE_TEXT[phase] || phase, desc: '' }
     }
 
+    // 绿 = 宵禁前自己关机（健康操作），红 = 宵禁强制关机，黄 = 取消，蓝 = 豁免，灰 = 未触发
     const OUTCOME_META = {
-      shutdown: { label: '关机', color: 'var(--dsw-alias-state-error-primary)' },
+      healthy: { label: '宵禁前主动关机', color: 'var(--dsw-alias-state-success-primary)' },
+      shutdown: { label: '宵禁强制关机', color: 'var(--dsw-alias-state-error-primary)' },
       cancel: { label: '取消', color: 'var(--dsw-alias-state-warn-primary)' },
-      exempt: { label: '豁免', color: 'var(--dsw-alias-state-success-primary)' },
+      exempt: { label: '自动豁免', color: '#4a86e8' },
       none: { label: '未触发', color: 'var(--dsw-alias-border-l2)' }
     }
+    const OUTCOME_ORDER = ['healthy', 'shutdown', 'cancel', 'exempt', 'none']
+    const CAL_WEEK = ['日', '一', '二', '三', '四', '五', '六']
     const outcomeMeta = (key) => OUTCOME_META[key] || OUTCOME_META.none
 
     function guardActiveText(data) {
@@ -264,6 +279,9 @@ window.__ModuleLoader__.load({
       const { data, failure, refresh, setData } = useHealth(3000)
       const [busy, setBusy] = useState('')
       const [notice, setNotice] = useState('')
+      const [viewMonth, setViewMonth] = useState('')
+      const [monthData, setMonthData] = useState(null)
+      const [monthBusy, setMonthBusy] = useState(false)
       const locked = Boolean(data && data.configLock)
 
       const patch = useCallback(async (partial, tag) => {
@@ -298,7 +316,51 @@ window.__ModuleLoader__.load({
 
       const config = data ? data.config : null
       const line = statusLine(data)
-      const report = (data && data.report) || { days: [], totals: { shutdown: 0, cancel: 0, exempt: 0, none: 0 }, restarts: 0 }
+      const liveReport = (data && data.report) || null
+      // 翻到别的月份时用单独拉回来的报表；空串表示「跟着当前月走」
+      const shownReport = !viewMonth ? (liveReport || monthData) : (liveReport && liveReport.month === viewMonth ? liveReport : monthData)
+      const report = shownReport || {
+        label: '—',
+        firstWeekday: 0,
+        days: [],
+        totals: { healthy: 0, shutdown: 0, cancel: 0, exempt: 0, none: 0 },
+        restarts: 0,
+        hasPrev: false,
+        hasNext: false
+      }
+
+      const loadMonth = useCallback(async (target) => {
+        if (!target || !/^\d{4}-\d{2}$/.test(target)) return
+        setMonthBusy(true)
+        try {
+          const next = await call(`report?month=${target}`)
+          if (next && next.ok && next.report) setMonthData(next.report)
+        } catch {
+          /* 拉不到就保持原样，不打断页面 */
+        } finally {
+          setMonthBusy(false)
+        }
+      }, [])
+
+      const navMonth = useCallback((delta) => {
+        const current = report
+        const target = delta < 0 ? current.prev : current.next
+        if (!target) return
+        if (delta < 0 && !current.hasPrev) return
+        if (delta > 0 && !current.hasNext) return
+        const live = liveReport
+        if (live && target === live.month) {
+          setViewMonth('')
+          return
+        }
+        setViewMonth(target)
+        void loadMonth(target)
+      }, [report, liveReport, loadMonth])
+
+      const blankCells = Array.from(
+        { length: Math.max(0, Math.min(6, Number(report.firstWeekday) || 0)) },
+        (_, index) => h('div', { key: `blank-${index}`, className: 'hl-cal-cell is-blank' })
+      )
 
       const patchDays = useCallback((index, partial) => {
         if (!config) return
@@ -431,11 +493,39 @@ window.__ModuleLoader__.load({
             desc: data && data.unsaved ? `检测时间 ${new Date(data.unsaved.at).toLocaleTimeString('zh-CN', { hour12: false })}` : '尚未触发'
           }, h('span', { className: 'hl-metric-value' }, data && data.unsaved ? data.unsaved.apps.join('、') : '—'))),
 
-        h(Card, { title: '本周报告' },
-          h('div', { className: 'hl-report' }, report.days.map((day) => h('div', { key: day.day, className: 'hl-report-day', title: outcomeMeta(day.outcome).label },
-            h('span', { className: 'hl-report-dot', style: { background: outcomeMeta(day.outcome).color } }),
-            h('span', { className: 'hl-report-date' }, day.day.slice(5))))),
-          h('p', { className: 'hl-hint' }, `关机 ${report.totals.shutdown} 次 · 取消 ${report.totals.cancel} 次 · 豁免 ${report.totals.exempt} 次 · 未触发 ${report.totals.none} 次${report.restarts ? ` · 退出并拉起 ${report.restarts} 次` : ''}`)),
+        h(Card, { title: '宵禁月报' },
+          h('div', { className: 'hl-month-head' },
+            h('div', { className: 'hl-month-title' }, report.label,
+              report.current ? h('span', { className: 'hl-month-sub' }, '本月') : null),
+            h('div', { className: 'hl-month-nav' },
+              h('button', {
+                type: 'button',
+                className: 'hl-btn',
+                disabled: monthBusy || !report.hasPrev,
+                onClick: () => navMonth(-1)
+              }, '‹ 上一月'),
+              h('button', {
+                type: 'button',
+                className: 'hl-btn',
+                disabled: monthBusy || !report.hasNext,
+                onClick: () => navMonth(1)
+              }, '下一月 ›'))),
+          h('div', { className: 'hl-cal' },
+            CAL_WEEK.map((name) => h('div', { key: `wd-${name}`, className: 'hl-cal-wd' }, name)),
+            blankCells,
+            report.days.map((day) => h('div', {
+              key: day.day,
+              className: 'hl-cal-cell' + (day.future ? ' is-future' : ''),
+              title: `${day.day} · ${outcomeMeta(day.outcome).label}`
+            },
+              h('span', { className: 'hl-cal-dot', style: { background: outcomeMeta(day.outcome).color } }),
+              h('span', { className: 'hl-cal-day' }, String(day.date))))),
+          h('div', { className: 'hl-legend' }, OUTCOME_ORDER.map((key) => h('span', { key, className: 'hl-legend-item' },
+            h('span', { className: 'hl-legend-dot', style: { background: OUTCOME_META[key].color } }),
+            OUTCOME_META[key].label))),
+          h('p', { className: 'hl-hint' },
+            `主动早睡 ${report.totals.healthy || 0} 天 · 宵禁关机 ${report.totals.shutdown || 0} 次 · 取消 ${report.totals.cancel || 0} 次 · 豁免 ${report.totals.exempt || 0} 次 · 未触发 ${report.totals.none || 0} 天${report.restarts ? ` · 退出并拉起 ${report.restarts} 次` : ''}`),
+          h('p', { className: 'hl-hint' }, '绿色读自 Windows 系统事件日志：宵禁开始前 8 小时内你自己关机，都算健康操作；系统更新之类的关机不计入。')),
 
         h(Card, { title: '预览与调试' },
           h('div', { className: 'hl-actions' },
